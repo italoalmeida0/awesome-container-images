@@ -9,6 +9,8 @@ on:
         type: choice
         options:
           - default
+          - jupyterlab
+          - jupyterlab-dev
           - vscode
           - vscode-dev
 
