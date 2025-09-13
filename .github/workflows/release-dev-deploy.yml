@@ -31,10 +31,12 @@ jobs:
           INPUT="${{ github.event.inputs.service }}"
 
           if [[ "$INPUT" == "default" ]]; then
-            echo "## ⚠️ Safety Option" >> $GITHUB_STEP_SUMMARY
-            echo "Default is a safety option. Select a service to build." >> $GITHUB_STEP_SUMMARY
-            echo "skip_all=true" >> $GITHUB_OUTPUT
-            exit 0
+            echo "::warning::Default option selected - This is a safety option"
+            echo "## ⚠️ No Build Performed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "You selected the **default** option which is a safety mechanism." >> $GITHUB_STEP_SUMMARY
+            echo "Please run the workflow again and select a specific service." >> $GITHUB_STEP_SUMMARY
+            exit 1
           fi
 
           echo "skip_all=false" >> $GITHUB_OUTPUT
