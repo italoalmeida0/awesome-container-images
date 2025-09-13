@@ -47,13 +47,13 @@ jobs:
             SERVICE="${INPUT%-dev}"
             IS_DEV="true"
             TAG_SUFFIX="-next-dev"
-            REGISTRY="ghcr.io/italoalmeida/aweci-dev"
+            REGISTRY="ghcr.io/italoalmeida0/aweci-dev"
             BUILD_TYPE="🔧 Dev"
           else
             SERVICE="$INPUT"
             IS_DEV="false"
             TAG_SUFFIX="-next"
-            REGISTRY="ghcr.io/italoalmeida/aweci"
+            REGISTRY="ghcr.io/italoalmeida0/aweci"
             BUILD_TYPE="🚀 Release"
           fi
 
@@ -119,8 +119,62 @@ jobs:
             ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.version }}
             ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}
 
-      - name: Create and push tag (only after successful build)
-        if: success() && steps.docker_build.outcome == 'success'
+      - name: Validate image healthcheck
+        id: validate_health
+        run: |
+          echo "🏥 Validating healthcheck for the built image..."
+          
+          IMAGE="${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.version }}"
+          
+          # Pull a imagem recém construída
+          docker pull $IMAGE
+          
+          # Roda o container em background
+          CONTAINER_ID=$(docker run -d \
+            --name test-health-${{ github.run_id }} \
+            -e PORT=8080 \
+            -p 8080:8080 \
+            $IMAGE)
+          
+          echo "Container started: $CONTAINER_ID"
+          
+          # Espera o container iniciar (máximo 30 segundos)
+          MAX_WAIT=30
+          COUNTER=0
+          
+          while [ $COUNTER -lt $MAX_WAIT ]; do
+            # Verifica o status do healthcheck
+            HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' test-health-${{ github.run_id }} 2>/dev/null || echo "none")
+            
+            echo "Health status after ${COUNTER}s: $HEALTH_STATUS"
+            
+            if [ "$HEALTH_STATUS" = "healthy" ]; then
+              echo "✅ Healthcheck passed!"
+              docker logs test-health-${{ github.run_id }}
+              docker stop test-health-${{ github.run_id }}
+              docker rm test-health-${{ github.run_id }}
+              exit 0
+            elif [ "$HEALTH_STATUS" = "unhealthy" ]; then
+              echo "❌ Healthcheck failed!"
+              docker logs test-health-${{ github.run_id }}
+              docker stop test-health-${{ github.run_id }}
+              docker rm test-health-${{ github.run_id }}
+              exit 1
+            fi
+            
+            sleep 1
+            COUNTER=$((COUNTER + 1))
+          done
+          
+          # Timeout
+          echo "⏱️ Healthcheck timeout after ${MAX_WAIT} seconds"
+          docker logs test-health-${{ github.run_id }}
+          docker stop test-health-${{ github.run_id }}
+          docker rm test-health-${{ github.run_id }}
+          exit 1
+
+      - name: Create and push tag (only after successful validation)
+        if: success() && steps.docker_build.outcome == 'success' && steps.validate_health.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -216,8 +270,8 @@ jobs:
           build-args: |
             BUILD_INFO=${{ steps.discover.outputs.json }}
           tags: |
-            ghcr.io/italoalmeida/aweci:latest
-            ghcr.io/italoalmeida/aweci:default
+            ghcr.io/italoalmeida0/aweci:latest
+            ghcr.io/italoalmeida0/aweci:default
 
       - name: Update DEV latest
         if: steps.parse.outputs.is_dev == 'true'
@@ -230,8 +284,8 @@ jobs:
           build-args: |
             BUILD_INFO=${{ steps.discover.outputs.json }}
           tags: |
-            ghcr.io/italoalmeida/aweci-dev:latest
-            ghcr.io/italoalmeida/aweci-dev:default
+            ghcr.io/italoalmeida0/aweci-dev:latest
+            ghcr.io/italoalmeida0/aweci-dev:default
 
       - name: Final Summary
         run: |
@@ -240,6 +294,7 @@ jobs:
           echo "**Built:** ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "**Type:** ${{ steps.parse.outputs.build_type }}" >> $GITHUB_STEP_SUMMARY
           echo "**Tag:** ${{ steps.version.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Health:** ✅ Validated" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📦 All Services (discovered dynamically):" >> $GITHUB_STEP_SUMMARY
           echo '```json' >> $GITHUB_STEP_SUMMARY
