@@ -91,13 +91,13 @@ ENV PATH="/home/user/.venv/bin:$PATH"
 COPY vscode/start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
+COPY .shared/healthcheck.sh /app/healthcheck.sh
+RUN chmod +x /app/healthcheck.sh
+
 USER user
 WORKDIR /home/user
 
 EXPOSE 8080
-
-COPY .shared/healthcheck.sh /app/healthcheck.sh
-RUN chmod +x /app/healthcheck.sh
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD /app/healthcheck.sh

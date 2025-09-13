@@ -68,10 +68,6 @@ jobs:
           echo "registry=${REGISTRY}" >> $GITHUB_OUTPUT
           echo "build_type=${BUILD_TYPE}" >> $GITHUB_OUTPUT
 
-      - name: Exit if default
-        if: steps.parse.outputs.skip_all == 'true'
-        run: exit 0
-
       - name: Get next version
         id: version
         run: |
@@ -96,12 +92,8 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
 
-      - name: Create and push tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.version.outputs.tag }}" -m "${{ steps.parse.outputs.build_type }} ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.version }}"
-          git push origin "${{ steps.version.outputs.tag }}"
+          echo "📋 Next version will be: ${VERSION}"
+          echo "🏷️ Tag will be: ${TAG} (will be created after successful build)"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -114,6 +106,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push service image
+        id: docker_build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -125,6 +118,15 @@ jobs:
           tags: |
             ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.version }}
             ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}
+
+      - name: Create and push tag (only after successful build)
+        if: success() && steps.docker_build.outcome == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "${{ steps.parse.outputs.build_type }} ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.version }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+          echo "✅ Tag created: ${{ steps.version.outputs.tag }}"
 
       - name: Discover and collect all services
         id: discover
@@ -204,6 +206,7 @@ jobs:
           EOF
 
       - name: Update PROD latest
+        if: steps.parse.outputs.is_dev == 'false'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -217,6 +220,7 @@ jobs:
             ghcr.io/italoalmeida/aweci:default
 
       - name: Update DEV latest
+        if: steps.parse.outputs.is_dev == 'true'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -235,6 +239,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Built:** ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "**Type:** ${{ steps.parse.outputs.build_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** ${{ steps.version.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📦 All Services (discovered dynamically):" >> $GITHUB_STEP_SUMMARY
           echo '```json' >> $GITHUB_STEP_SUMMARY
