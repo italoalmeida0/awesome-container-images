@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  workflows: write
 
 jobs:
   update-options:
@@ -16,7 +17,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          token: ${{ secrets.WORKFLOW_UPDATE_TOKEN }} # 👈 Use o PAT aqui
+          token: ${{ secrets.WORKFLOW_UPDATE_TOKEN }}
           fetch-depth: 0
 
       - name: Discover services and update workflow
