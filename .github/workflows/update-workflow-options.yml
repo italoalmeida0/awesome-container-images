@@ -40,37 +40,49 @@ jobs:
             fi
           done
 
+          SERVICES=$(echo $SERVICES | tr ' ' '\n' | sort | tr '\n' ' ')
           echo "Services found: $SERVICES"
 
-          OPTIONS="          - default"
+          NEW_OPTIONS="        options:\n          - default"
           for SERVICE in $SERVICES; do
-            OPTIONS="$OPTIONS
-          - $SERVICE
-          - $SERVICE-dev"
+            NEW_OPTIONS="${NEW_OPTIONS}\n          - ${SERVICE}\n          - ${SERVICE}-dev"
           done
 
-          echo "Generated options:"
-          echo "$OPTIONS"
+          echo -e "Generated options:\n$NEW_OPTIONS"
 
           cp "$WORKFLOW_FILE" "${WORKFLOW_FILE}.bak"
 
-          awk -v new_options="$OPTIONS" '
-            /^        options:/ {
-              print
+          awk -v new_opts="$NEW_OPTIONS" '
+            BEGIN { in_options = 0 }
+            
+            /^[ ]*options:[ ]*$/ {
+              match($0, /^[ ]*/)
+              indent = substr($0, RSTART, RLENGTH)
               in_options = 1
               next
             }
-            in_options && /^          - / {
+            
+            in_options && /^[ ]*-/ {
               next
             }
-            in_options && !/^          - / {
-              print new_options
+            
+            in_options && !/^[ ]*-/ {
+              printf "%s", new_opts "\n"
               in_options = 0
-            }
-            !in_options {
               print
+              next
             }
-          ' "${WORKFLOW_FILE}.bak" > "$WORKFLOW_FILE"
+            
+            { print }
+            
+            END {
+              if (in_options) {
+                printf "%s", new_opts "\n"
+              }
+            }
+          ' "${WORKFLOW_FILE}.bak" > "$WORKFLOW_FILE.tmp"
+
+          mv "$WORKFLOW_FILE.tmp" "$WORKFLOW_FILE"
 
           if git diff --quiet "$WORKFLOW_FILE"; then
             echo "✅ No changes needed - workflow is up to date!"
@@ -101,6 +113,8 @@ jobs:
               --base main \
               --head "$BRANCH" || echo "PR creation failed - push was successful though"
           fi
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_UPDATE_TOKEN }}
 
       - name: Summary
         run: |
