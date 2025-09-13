@@ -1,0 +1,122 @@
+name: Update Workflow Options
+on:
+  push:
+    paths:
+      - "*/Dockerfile"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-options:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Discover services and update workflow
+        run: |
+          WORKFLOW_FILE=".github/workflows/release-dev-deploy.yml"
+
+          echo "🔍 Discovering all services..."
+
+          SERVICES=""
+          for dir in */; do
+            dir=${dir%/}
+            
+            if [[ "$dir" == .* ]] || [[ "$dir" == _* ]]; then
+              continue
+            fi
+            
+            if [[ -f "$dir/Dockerfile" ]]; then
+              SERVICES="$SERVICES $dir"
+              echo "Found: $dir"
+            fi
+          done
+
+          echo "Services found: $SERVICES"
+
+          OPTIONS="          - default"
+          for SERVICE in $SERVICES; do
+            OPTIONS="$OPTIONS
+          - $SERVICE
+          - $SERVICE-dev"
+          done
+
+          echo "Generated options:"
+          echo "$OPTIONS"
+
+          cp "$WORKFLOW_FILE" "${WORKFLOW_FILE}.bak"
+
+          awk -v new_options="$OPTIONS" '
+            /^        options:/ {
+              print
+              in_options = 1
+              next
+            }
+            in_options && /^          - / {
+              next
+            }
+            in_options && !/^          - / {
+              print new_options
+              in_options = 0
+            }
+            !in_options {
+              print
+            }
+          ' "${WORKFLOW_FILE}.bak" > "$WORKFLOW_FILE"
+
+          if git diff --quiet "$WORKFLOW_FILE"; then
+            echo "✅ No changes needed - workflow is up to date!"
+          else
+            echo "📝 Changes detected! Updating workflow..."
+            
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            
+            git add "$WORKFLOW_FILE"
+            git commit -m "🤖 Auto-update workflow options - found services: $SERVICES"
+
+            BRANCH="auto-update-workflow-$(date +%s)"
+            git checkout -b "$BRANCH"
+            git push origin "$BRANCH"
+            
+            gh pr create \
+              --title "🤖 Auto-update workflow options" \
+              --body "Found services: $SERVICES
+              
+              This PR was automatically generated to update the workflow options.
+              
+              ### Changes:
+              - Updated service options in release-dev-deploy.yml
+              - Added entries for: $SERVICES
+              
+              Please review and merge." \
+              --base main \
+              --head "$BRANCH" || echo "PR creation failed - push was successful though"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## 🔄 Workflow Update Check" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Discovered Services:" >> $GITHUB_STEP_SUMMARY
+          for dir in */; do
+            dir=${dir%/}
+            if [[ "$dir" != .* ]] && [[ "$dir" != _* ]] && [[ -f "$dir/Dockerfile" ]]; then
+              echo "- ✅ $dir" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if git diff --quiet .github/workflows/release-dev-deploy.yml; then
+            echo "**Status:** ✅ Workflow is up to date" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Status:** 📝 Workflow updated with new services" >> $GITHUB_STEP_SUMMARY
+          fi

@@ -1,0 +1,238 @@
+name: Build & Deploy - Auto Versioning
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Service to Build & Deploy"
+        required: true
+        default: "default"
+        type: choice
+        options:
+          - default
+          - vscode
+          - vscode-dev
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Parse service and environment
+        id: parse
+        run: |
+          INPUT="${{ github.event.inputs.service }}"
+
+          if [[ "$INPUT" == "default" ]]; then
+            echo "## ⚠️ Safety Option" >> $GITHUB_STEP_SUMMARY
+            echo "Default is a safety option. Select a service to build." >> $GITHUB_STEP_SUMMARY
+            echo "skip_all=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "skip_all=false" >> $GITHUB_OUTPUT
+
+          if [[ "$INPUT" == *"-dev" ]]; then
+            SERVICE="${INPUT%-dev}"
+            IS_DEV="true"
+            TAG_SUFFIX="-next-dev"
+            REGISTRY="ghcr.io/italoalmeida/aweci-dev"
+            BUILD_TYPE="🔧 Dev"
+          else
+            SERVICE="$INPUT"
+            IS_DEV="false"
+            TAG_SUFFIX="-next"
+            REGISTRY="ghcr.io/italoalmeida/aweci"
+            BUILD_TYPE="🚀 Release"
+          fi
+
+          if [[ ! -d "$SERVICE" ]] || [[ ! -f "$SERVICE/Dockerfile" ]]; then
+            echo "❌ Service '$SERVICE' not found or doesn't have a Dockerfile!" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          echo "service=${SERVICE}" >> $GITHUB_OUTPUT
+          echo "is_dev=${IS_DEV}" >> $GITHUB_OUTPUT
+          echo "tag_suffix=${TAG_SUFFIX}" >> $GITHUB_OUTPUT
+          echo "registry=${REGISTRY}" >> $GITHUB_OUTPUT
+          echo "build_type=${BUILD_TYPE}" >> $GITHUB_OUTPUT
+
+      - name: Exit if default
+        if: steps.parse.outputs.skip_all == 'true'
+        run: exit 0
+
+      - name: Get next version
+        id: version
+        run: |
+          SERVICE="${{ steps.parse.outputs.service }}"
+
+          LATEST_TAG=$(git tag -l "${SERVICE}-*" --sort=-version:refname | head -n 1)
+
+          if [[ -z "$LATEST_TAG" ]]; then
+            VERSION="0.0.0"
+          else
+            CURRENT_VERSION=$(echo $LATEST_TAG | sed "s/${SERVICE}-//" | sed 's/-next.*//' | sed 's/-dev.*//')
+            IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
+            MAJOR=${VERSION_PARTS[0]:-0}
+            MINOR=${VERSION_PARTS[1]:-0}
+            PATCH=${VERSION_PARTS[2]:-0}
+            PATCH=$((PATCH + 1))
+            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          fi
+
+          TAG="${SERVICE}-${VERSION}${{ steps.parse.outputs.tag_suffix }}"
+
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "${{ steps.parse.outputs.build_type }} ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.version }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push service image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./${{ steps.parse.outputs.service }}/Dockerfile
+          push: true
+          platforms: ${{ steps.parse.outputs.is_dev == 'true' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          cache-from: type=registry,ref=${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-buildcache
+          cache-to: type=registry,ref=${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-buildcache,mode=max
+          tags: |
+            ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.version }}
+            ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}
+
+      - name: Discover and collect all services
+        id: discover
+        run: |
+          echo "🔍 Discovering all services dynamically..."
+
+          ALL_SERVICES=""
+          for dir in */; do
+            dir=${dir%/}
+            
+            if [[ "$dir" == .* ]] || [[ "$dir" == _* ]]; then
+              continue
+            fi
+            
+            if [[ -f "$dir/Dockerfile" ]]; then
+              ALL_SERVICES="$ALL_SERVICES $dir"
+              echo "Found service: $dir"
+            fi
+          done
+
+          JSON='{"timestamp":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'",'
+          JSON+='"available_services":['
+
+          FIRST=true
+          for SERVICE in $ALL_SERVICES; do
+            if [[ "$FIRST" != "true" ]]; then
+              JSON+=","
+            fi
+            FIRST=false
+            JSON+='"'$SERVICE'","'$SERVICE'-dev"'
+          done
+          JSON+='],'
+
+          JSON+='"versions":{'
+
+          FIRST=true
+          for SERVICE in $ALL_SERVICES; do
+            if [[ "$FIRST" != "true" ]]; then
+              JSON+=","
+            fi
+            FIRST=false
+            
+            PROD_TAG=$(git tag -l "${SERVICE}-*-next" | grep -v "\-dev" | sort -V | tail -n 1)
+            if [[ -n "$PROD_TAG" ]]; then
+              PROD_VERSION=$(echo $PROD_TAG | sed "s/${SERVICE}-//" | sed 's/-next//')
+            else
+              PROD_VERSION="none"
+            fi
+            
+            DEV_TAG=$(git tag -l "${SERVICE}-*-next-dev" | sort -V | tail -n 1)
+            if [[ -n "$DEV_TAG" ]]; then
+              DEV_VERSION=$(echo $DEV_TAG | sed "s/${SERVICE}-//" | sed 's/-next-dev//')
+            else
+              DEV_VERSION="none"
+            fi
+            
+            JSON+='"'$SERVICE'":{"prod":"'$PROD_VERSION'","dev":"'$DEV_VERSION'"}'
+          done
+
+          JSON+='}}'
+
+          echo "Discovered services: $ALL_SERVICES"
+          echo "$JSON"
+          echo "json=$JSON" >> $GITHUB_OUTPUT
+
+      - name: Create default Dockerfile
+        run: |
+          cat << 'EOF' > Dockerfile.default
+          FROM busybox:latest
+          ARG BUILD_INFO
+          ENV INFO=$BUILD_INFO
+          RUN echo '#!/bin/sh' > /info.sh && \
+              echo 'echo "$INFO"' >> /info.sh && \
+              echo 'sleep infinity' >> /info.sh && \
+              chmod +x /info.sh
+          CMD ["/info.sh"]
+          EOF
+
+      - name: Update PROD latest
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.default
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            BUILD_INFO=${{ steps.discover.outputs.json }}
+          tags: |
+            ghcr.io/italoalmeida/aweci:latest
+            ghcr.io/italoalmeida/aweci:default
+
+      - name: Update DEV latest
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.default
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            BUILD_INFO=${{ steps.discover.outputs.json }}
+          tags: |
+            ghcr.io/italoalmeida/aweci-dev:latest
+            ghcr.io/italoalmeida/aweci-dev:default
+
+      - name: Final Summary
+        run: |
+          echo "## ✅ Build Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Built:** ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Type:** ${{ steps.parse.outputs.build_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 All Services (discovered dynamically):" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          echo '${{ steps.discover.outputs.json }}' | jq '.' || echo '${{ steps.discover.outputs.json }}'
+          echo '```' >> $GITHUB_STEP_SUMMARY

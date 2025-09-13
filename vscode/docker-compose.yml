@@ -1,0 +1,26 @@
+services:
+  vscode:
+    build: ./
+    container_name: vscode
+    hostname: vscode
+    environment:
+      - PORT=8080
+      - TZ=Europe/Lisbon
+      - SERVER_DATA_DIR=/home/user/.vscode-server
+      - VERBOSE=false
+    volumes:
+      - "./data:/home/user"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    restart: always
+    user: "1000:1000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "sh",
+          "-c",
+          "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ | grep -E '^(200|401|403)$'",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
