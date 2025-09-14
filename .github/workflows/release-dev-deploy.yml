@@ -68,7 +68,7 @@ jobs:
           echo "registry=${REGISTRY}" >> $GITHUB_OUTPUT
           echo "build_type=${BUILD_TYPE}" >> $GITHUB_OUTPUT
 
-      - name: Get next version
+      - name: Get current and next version
         id: version
         run: |
           SERVICE="${{ steps.parse.outputs.service }}"
@@ -76,24 +76,29 @@ jobs:
           LATEST_TAG=$(git tag -l "${SERVICE}-*" --sort=-version:refname | head -n 1)
 
           if [[ -z "$LATEST_TAG" ]]; then
-            VERSION="0.0.0"
+            CURRENT_VERSION="0.0.0"
+            NEXT_VERSION="0.0.1"
           else
             CURRENT_VERSION=$(echo $LATEST_TAG | sed "s/${SERVICE}-//" | sed 's/-next.*//' | sed 's/-dev.*//')
+            
             IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
             MAJOR=${VERSION_PARTS[0]:-0}
             MINOR=${VERSION_PARTS[1]:-0}
             PATCH=${VERSION_PARTS[2]:-0}
             PATCH=$((PATCH + 1))
-            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
           fi
 
-          TAG="${SERVICE}-${VERSION}${{ steps.parse.outputs.tag_suffix }}"
+          CURRENT_TAG="${SERVICE}-${CURRENT_VERSION}${{ steps.parse.outputs.tag_suffix }}"
+          NEXT_TAG="${SERVICE}-${NEXT_VERSION}${{ steps.parse.outputs.tag_suffix }}"
 
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+          echo "next_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
+          echo "current_tag=${CURRENT_TAG}" >> $GITHUB_OUTPUT
+          echo "next_tag=${NEXT_TAG}" >> $GITHUB_OUTPUT
 
-          echo "📋 Next version will be: ${VERSION}"
-          echo "🏷️ Tag will be: ${TAG} (will be created after successful build)"
+          echo "📋 Building version: ${CURRENT_VERSION}"
+          echo "🏷️ Next tag will be: ${NEXT_TAG}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -116,7 +121,7 @@ jobs:
           cache-from: type=registry,ref=${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-buildcache
           cache-to: type=registry,ref=${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-buildcache,mode=max
           tags: |
-            ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.version }}
+            ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.current_version }}
             ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}
 
       - name: Validate image healthcheck
@@ -124,7 +129,7 @@ jobs:
         run: |
           echo "🏥 Validating healthcheck for the built image..."
 
-          IMAGE="${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.version }}"
+          IMAGE="${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.current_version }}"
 
           docker pull $IMAGE
 
@@ -154,19 +159,18 @@ jobs:
           done
               
           echo "⏱️ Timeout after 50 seconds - Status: $HEALTH_STATUS"
-          docker logs test-health-${{ github.run_id }}
-          docker stop test-health-${{ github.run_id }}
-          docker rm test-health-${{ github.run_id }}
+          docker logs --tail 20 test-health-${{ github.run_id }}
+          docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
           exit 1
 
-      - name: Create and push tag (only after successful validation)
+      - name: Create and push next version tag
         if: success() && steps.docker_build.outcome == 'success' && steps.validate_health.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.version.outputs.tag }}" -m "${{ steps.parse.outputs.build_type }} ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.version }}"
-          git push origin "${{ steps.version.outputs.tag }}"
-          echo "✅ Tag created: ${{ steps.version.outputs.tag }}"
+          git tag -a "${{ steps.version.outputs.next_tag }}" -m "Next: ${{ steps.parse.outputs.build_type }} ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.next_version }}"
+          git push origin "${{ steps.version.outputs.next_tag }}"
+          echo "✅ Next version tag created: ${{ steps.version.outputs.next_tag }}"
 
       - name: Discover and collect all services
         id: discover
@@ -211,14 +215,48 @@ jobs:
             
             PROD_TAG=$(git tag -l "${SERVICE}-*-next" | grep -v "\-dev" | sort -V | tail -n 1)
             if [[ -n "$PROD_TAG" ]]; then
-              PROD_VERSION=$(echo $PROD_TAG | sed "s/${SERVICE}-//" | sed 's/-next//')
+              TAG_VERSION=$(echo $PROD_TAG | sed "s/${SERVICE}-//" | sed 's/-next//')
+              
+              IFS='.' read -ra VER_PARTS <<< "$TAG_VERSION"
+              MAJOR=${VER_PARTS[0]:-0}
+              MINOR=${VER_PARTS[1]:-0}
+              PATCH=${VER_PARTS[2]:-0}
+              
+              FOUND_VERSION="none"
+              for i in $(seq $PATCH -1 0); do
+                CHECK_VERSION="${MAJOR}.${MINOR}.${i}"
+                IMAGE_URL="ghcr.io/italoalmeida0/aweci:${SERVICE}-${CHECK_VERSION}"
+                
+                if docker manifest inspect $IMAGE_URL >/dev/null 2>&1; then
+                  FOUND_VERSION="$CHECK_VERSION"
+                  break
+                fi
+              done
+              PROD_VERSION="$FOUND_VERSION"
             else
               PROD_VERSION="none"
             fi
             
             DEV_TAG=$(git tag -l "${SERVICE}-*-next-dev" | sort -V | tail -n 1)
             if [[ -n "$DEV_TAG" ]]; then
-              DEV_VERSION=$(echo $DEV_TAG | sed "s/${SERVICE}-//" | sed 's/-next-dev//')
+              TAG_VERSION=$(echo $DEV_TAG | sed "s/${SERVICE}-//" | sed 's/-next-dev//')
+              
+              IFS='.' read -ra VER_PARTS <<< "$TAG_VERSION"
+              MAJOR=${VER_PARTS[0]:-0}
+              MINOR=${VER_PARTS[1]:-0}
+              PATCH=${VER_PARTS[2]:-0}
+              
+              FOUND_VERSION="none"
+              for i in $(seq $PATCH -1 0); do
+                CHECK_VERSION="${MAJOR}.${MINOR}.${i}"
+                IMAGE_URL="ghcr.io/italoalmeida0/aweci-dev:${SERVICE}-${CHECK_VERSION}"
+                
+                if docker manifest inspect $IMAGE_URL >/dev/null 2>&1; then
+                  FOUND_VERSION="$CHECK_VERSION"
+                  break
+                fi
+              done
+              DEV_VERSION="$FOUND_VERSION"
             else
               DEV_VERSION="none"
             fi
@@ -277,12 +315,13 @@ jobs:
         run: |
           echo "## ✅ Build Complete!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Built:** ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Built:** ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.current_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Next Version:** v${{ steps.version.outputs.next_version }}" >> $GITHUB_STEP_SUMMARY
           echo "**Type:** ${{ steps.parse.outputs.build_type }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Tag:** ${{ steps.version.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** ${{ steps.version.outputs.next_tag }}" >> $GITHUB_STEP_SUMMARY
           echo "**Health:** ✅ Validated" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📦 All Services (discovered dynamically):" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 All Services:" >> $GITHUB_STEP_SUMMARY
           echo '```json' >> $GITHUB_STEP_SUMMARY
           echo '${{ steps.discover.outputs.json }}' | jq '.' || echo '${{ steps.discover.outputs.json }}'
           echo '```' >> $GITHUB_STEP_SUMMARY
