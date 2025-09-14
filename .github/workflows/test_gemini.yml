@@ -1,0 +1,144 @@
+name: Test Gemini API
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Prompt to send to Gemini"
+        required: true
+        default: "Write a haiku about GitHub Actions"
+        type: string
+
+jobs:
+  test-gemini:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup environment
+        run: |
+          echo "Starting Gemini API test..."
+          echo "Prompt: ${{ github.event.inputs.prompt }}"
+
+      - name: Call Gemini API
+        id: gemini
+        run: |
+          # Prepare the prompt with proper JSON escaping
+          PROMPT="${{ github.event.inputs.prompt }}"
+          PROMPT_JSON=$(echo "$PROMPT" | jq -Rs .)
+
+          echo "📝 Original prompt: $PROMPT"
+          echo "🔧 JSON-escaped prompt: $PROMPT_JSON"
+
+          # Make the API call
+          echo "🤖 Calling Gemini 2.5 Flash API..."
+
+          RESPONSE=$(curl -s -X POST \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"contents\": [{
+                \"parts\": [{
+                  \"text\": $PROMPT_JSON
+                }]
+              }],
+              \"generationConfig\": {
+                \"temperature\": 0.8,
+                \"maxOutputTokens\": 800,
+                \"topP\": 0.95
+              }
+            }")
+
+          # Debug: Show full response
+          echo "📥 Full API Response:"
+          echo "$RESPONSE" | jq .
+
+          # Check for errors
+          ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty')
+          if [[ -n "$ERROR" ]]; then
+            echo "❌ API Error detected: $ERROR"
+            echo "error=true" >> $GITHUB_OUTPUT
+            echo "error_message=$ERROR" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          # Extract the generated text
+          GENERATED_TEXT=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "No text generated"')
+
+          if [[ "$GENERATED_TEXT" == "No text generated" ]]; then
+            echo "⚠️ Warning: No text was generated"
+            echo "error=true" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "✅ Successfully generated response!"
+          echo "📄 Generated text:"
+          echo "------------------------"
+          echo "$GENERATED_TEXT"
+          echo "------------------------"
+
+          # Save to output
+          echo "generated_text<<EOF" >> $GITHUB_OUTPUT
+          echo "$GENERATED_TEXT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "error=false" >> $GITHUB_OUTPUT
+
+          # Also save token usage
+          PROMPT_TOKENS=$(echo "$RESPONSE" | jq -r '.usageMetadata.promptTokenCount // 0')
+          RESPONSE_TOKENS=$(echo "$RESPONSE" | jq -r '.usageMetadata.candidatesTokenCount // 0')
+          TOTAL_TOKENS=$(echo "$RESPONSE" | jq -r '.usageMetadata.totalTokenCount // 0')
+
+          echo "📊 Token Usage:"
+          echo "  - Prompt tokens: $PROMPT_TOKENS"
+          echo "  - Response tokens: $RESPONSE_TOKENS"
+          echo "  - Total tokens: $TOTAL_TOKENS"
+
+          echo "prompt_tokens=$PROMPT_TOKENS" >> $GITHUB_OUTPUT
+          echo "response_tokens=$RESPONSE_TOKENS" >> $GITHUB_OUTPUT
+          echo "total_tokens=$TOTAL_TOKENS" >> $GITHUB_OUTPUT
+
+      - name: Display Results
+        if: always()
+        run: |
+          echo "🎯 Summary:"
+          echo "==========="
+          if [[ "${{ steps.gemini.outputs.error }}" == "true" ]]; then
+            echo "❌ Test failed!"
+            if [[ -n "${{ steps.gemini.outputs.error_message }}" ]]; then
+              echo "Error: ${{ steps.gemini.outputs.error_message }}"
+            fi
+          else
+            echo "✅ Test passed!"
+            echo ""
+            echo "Generated Response:"
+            echo "${{ steps.gemini.outputs.generated_text }}"
+            echo ""
+            echo "Token Usage:"
+            echo "- Prompt: ${{ steps.gemini.outputs.prompt_tokens }}"
+            echo "- Response: ${{ steps.gemini.outputs.response_tokens }}"
+            echo "- Total: ${{ steps.gemini.outputs.total_tokens }}"
+          fi
+
+      - name: Test Different Models (Optional)
+        if: success()
+        run: |
+          echo "🧪 Testing with different model versions..."
+
+          # Test with Gemini 1.5 Flash
+          echo "Testing gemini-1.5-flash..."
+          RESPONSE_15=$(curl -s -X POST \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "contents": [{
+                "parts": [{
+                  "text": "Say hello in 5 words"
+                }]
+              }],
+              "generationConfig": {
+                "temperature": 0.5,
+                "maxOutputTokens": 50
+              }
+            }')
+
+          TEXT_15=$(echo "$RESPONSE_15" | jq -r '.candidates[0].content.parts[0].text // "Failed"')
+          echo "Gemini 1.5 Flash response: $TEXT_15"
