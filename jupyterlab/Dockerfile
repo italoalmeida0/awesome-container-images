@@ -77,6 +77,8 @@ WORKDIR /home/user
 
 EXPOSE 8080
 
+ENV HEALTH_ENDPOINT=/lab
+
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=5 \
     CMD /app/healthcheck.sh
 
