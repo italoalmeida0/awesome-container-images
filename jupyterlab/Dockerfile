@@ -22,6 +22,9 @@ RUN groupadd -g 1000 user && \
     useradd -m -u 1000 -g user -s /bin/bash user && \
     echo "user ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
+RUN mkdir -p /home/linuxbrew && \
+    chown -R user:user /home/linuxbrew
+
 USER user
 WORKDIR /home/user
 
