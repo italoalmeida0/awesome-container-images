@@ -204,30 +204,34 @@ jobs:
 
           read -r -d '' PROMPT << EOM || true
           You are a release notes generator for Docker container services.
-          Generate professional and exciting release notes for: ${SERVICE} v${{ steps.version.outputs.next_version }}
+          Generate professional and exciting release notes for the JUST RELEASED version: ${SERVICE} v${{ steps.version.outputs.current_version }}
+
+          IMPORTANT: This version has ALREADY been built and released. Write in PAST TENSE about what WAS accomplished in this release.
+          DO NOT talk about future versions or upcoming features.
 
           Changes summary: ${DIFF_SUMMARY}
           Files: ${FILES_CHANGED}
 
-          Recent commits:
+          Recent commits included in THIS release:
           ${COMMITS}
 
           Instructions:
-          1. Create a catchy 1-2 sentence summary of what's new
-          2. List key highlights organized by category using these emojis:
-             - ✨ New Features
-             - 🐛 Bug Fixes  
-             - ⚡ Performance Improvements
-             - 🔧 Maintenance
-             - 📚 Documentation
-             - 🚨 Breaking Changes (if any)
+          1. Create a catchy 1-2 sentence summary of what's NEW in this release (past tense)
+          2. List key highlights that WERE delivered in this version using these emojis:
+            - ✨ New Features
+            - 🐛 Bug Fixes  
+            - ⚡ Performance Improvements
+            - 🔧 Maintenance
+            - 📚 Documentation
+            - 🚨 Breaking Changes (if any)
           3. Keep it user-friendly, focus on benefits not technical details
           4. Be enthusiastic but professional
           5. Maximum 400 words
           6. Use markdown formatting
           7. Don't include installation instructions or technical details
+          8. Write everything in PAST TENSE - this version is already released!
 
-          Make developers excited to use this new version!
+          Make developers excited to use this NEW version that's now available!
           EOM
 
           PROMPT_JSON=$(echo "$PROMPT" | jq -Rs .)
@@ -296,8 +300,8 @@ jobs:
           ${COMPARE_URL}
 
           ## 🏷️ Version Info
-          - **Released:** v${{ steps.version.outputs.current_version }}
-          - **Next:** v${{ steps.version.outputs.next_version }}
+          - **Current Release:** v${{ steps.version.outputs.current_version }}
+          - **Previous Version:** ${PREVIOUS_TAG:-'Initial Release'}
           - **Registry:** ${{ steps.parse.outputs.registry }}
           EOF
 
@@ -319,10 +323,13 @@ jobs:
         id: discover
         run: |
           echo "🔍 Discovering all services dynamically..."
+          IS_DEV="${{ steps.parse.outputs.is_dev }}"
           python3 << 'EOF'
           import os
           import subprocess
           from datetime import datetime
+
+          is_dev = os.environ.get('IS_DEV', 'false') == 'true'
 
           services = []
           for item in os.listdir('.'):
@@ -330,14 +337,17 @@ jobs:
                   if os.path.exists(f'{item}/Dockerfile'):
                       services.append(item)
 
-          production_versions = {}
-          development_versions = {}
+          versions = {}
 
           for service in services:
-            prod_tag = subprocess.run(f'git tag -l "{service}-*-next" | grep -v "\-dev" | sort -V | tail -n 1', 
-                                    shell=True, capture_output=True, text=True).stdout.strip()
-            dev_tag = subprocess.run(f'git tag -l "{service}-*-next-dev" | sort -V | tail -n 1', 
-                                    shell=True, capture_output=True, text=True).stdout.strip()
+            if is_dev:
+              tag = subprocess.run(f'git tag -l "{service}-*-next-dev" | sort -V | tail -n 1', 
+                                  shell=True, capture_output=True, text=True).stdout.strip()
+              registry_suffix = "-dev"
+            else:
+              tag = subprocess.run(f'git tag -l "{service}-*-next" | grep -v "\-dev" | sort -V | tail -n 1', 
+                                  shell=True, capture_output=True, text=True).stdout.strip()
+              registry_suffix = ""
             
             def find_docker_version(service, tag, registry_suffix=""):
               if not tag:
@@ -350,7 +360,7 @@ jobs:
                 if suffix in tag_version:
                   tag_version = tag_version.replace(suffix, "")
                   break
-            
+              
               try:
                 parts = tag_version.split('.')
                 major, minor, patch = parts[0], parts[1], int(parts[2])
@@ -371,32 +381,28 @@ jobs:
                   return check_version
               
               return "none"
-
-            prod_version = find_docker_version(service, prod_tag, registry_suffix="")
-            dev_version = find_docker_version(service, dev_tag, registry_suffix="-dev")
             
-            production_versions[service] = prod_version
-            development_versions[service] = dev_version
+            version = find_docker_version(service, tag, registry_suffix=registry_suffix)
+            versions[service] = version
+
+          build_type = "development" if is_dev else "production"
 
           toml_content = f"""# Latest Versions | 🪸 AWECI - Awesome Container Images 🐋
           # Generated at {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")}
+          # Build Type: {build_type.upper()}
 
           [metadata]
           timestamp = "{datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}"
           total_services = {len(services)}
+          build_type = "{build_type}"
 
           [services]
           available = {services}
 
-          [versions.production]"""
+          [versions.{build_type}]"""
 
           for service in sorted(services):
-            toml_content += f'\n{service} = "{production_versions[service]}"'
-
-          toml_content += "\n\n[versions.development]"
-
-          for service in sorted(services):
-            toml_content += f'\n{service} = "{development_versions[service]}"'
+            toml_content += f'\n{service} = "{versions[service]}"'
 
           toml_content += "\n"
 
@@ -408,6 +414,8 @@ jobs:
 
           print("\nTOML saved to registry-info.toml")
           EOF
+        env:
+          IS_DEV: ${{ steps.parse.outputs.is_dev }}
 
       - name: Create default Dockerfile
         run: |
