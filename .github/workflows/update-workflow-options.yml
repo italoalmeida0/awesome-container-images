@@ -49,14 +49,16 @@ jobs:
               new_options.append(service)
               new_options.append(f"{service}-dev")
 
-          old_options = workflow['on']['workflow_dispatch']['inputs']['service']['options']
-          workflow['on']['workflow_dispatch']['inputs']['service']['options'] = new_options
+          old_options = workflow[True]['workflow_dispatch']['inputs']['service']['options']
+          workflow[True]['workflow_dispatch']['inputs']['service']['options'] = new_options
 
           if old_options == new_options:
               print("✅ No changes needed - workflow is up to date!")
           else:
               print("📝 Changes detected! Updating workflow...")
               
+              workflow['on'] = workflow.pop(True)
+
               with open(workflow_file, 'w') as f:
                   yaml.dump(workflow, f, default_flow_style=False, sort_keys=False, width=120)
               
