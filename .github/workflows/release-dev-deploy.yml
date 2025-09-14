@@ -276,11 +276,7 @@ jobs:
           FROM busybox:latest
           ARG BUILD_INFO
           ENV INFO=$BUILD_INFO
-          RUN echo '#!/bin/sh' > /info.sh && \
-              echo 'echo "$INFO"' >> /info.sh && \
-              echo 'sleep infinity' >> /info.sh && \
-              chmod +x /info.sh
-          CMD ["/info.sh"]
+          CMD echo "$INFO"
           EOF
 
       - name: Update PROD latest
@@ -311,7 +307,7 @@ jobs:
             ghcr.io/italoalmeida0/aweci-dev:latest
             ghcr.io/italoalmeida0/aweci-dev:default
 
-      - name: Final Summary
+      - name: Final Summary with Live Info
         run: |
           echo "## ✅ Build Complete!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -321,7 +317,11 @@ jobs:
           echo "**Tag:** ${{ steps.version.outputs.next_tag }}" >> $GITHUB_STEP_SUMMARY
           echo "**Health:** ✅ Validated" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📦 All Services:" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Registry Status:" >> $GITHUB_STEP_SUMMARY
           echo '```json' >> $GITHUB_STEP_SUMMARY
-          echo '${{ steps.discover.outputs.json }}' | jq '.' || echo '${{ steps.discover.outputs.json }}'
+          if [[ "${{ steps.parse.outputs.is_dev }}" == "true" ]]; then
+            docker run --rm ghcr.io/italoalmeida0/aweci-dev:default | jq '.' >> $GITHUB_STEP_SUMMARY
+          else
+            docker run --rm ghcr.io/italoalmeida0/aweci:default | jq '.' >> $GITHUB_STEP_SUMMARY
+          fi
           echo '```' >> $GITHUB_STEP_SUMMARY
