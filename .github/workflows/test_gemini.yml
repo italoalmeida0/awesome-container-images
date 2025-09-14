@@ -6,12 +6,12 @@ on:
       service:
         description: "Service name"
         required: true
-        default: "api-service"
+        default: "jupyterlab"
         type: string
       version:
         description: "Version number"
         required: true
-        default: "1.2.3"
+        default: "4.6.7"
         type: string
       simulate_commits:
         description: "Simulate commits (true/false)"
@@ -283,7 +283,7 @@ jobs:
 
       - name: Upload Release Notes
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: release-notes
           path: release_notes.md
