@@ -151,7 +151,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push architecture-specific image
+        id: build_with_cache
         uses: docker/build-push-action@v5
+        continue-on-error: true
         with:
           context: .
           file: ./${{ needs.prepare.outputs.service }}/Dockerfile
@@ -162,7 +164,19 @@ jobs:
           tags: |
             ${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ needs.prepare.outputs.current_version }}-${{ matrix.arch }}
           provenance: false
-          sbom: false
+
+      - name: Build without cache (fallback)
+        if: steps.build_with_cache.outcome == 'failure'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./${{ needs.prepare.outputs.service }}/Dockerfile
+          push: true
+          platforms: ${{ matrix.platform }}
+          no-cache: true
+          tags: |
+            ${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ needs.prepare.outputs.current_version }}-${{ matrix.arch }}
+          provenance: false
 
   # ============================================
   create-manifest:
