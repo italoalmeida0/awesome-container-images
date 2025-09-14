@@ -293,6 +293,12 @@ jobs:
 
       - name: Final Summary
         run: |
+          if [[ "${{ steps.parse.outputs.is_dev }}" == "true" ]]; then
+            docker run --rm ghcr.io/italoalmeida0/aweci-dev:default
+          else
+            docker run --rm ghcr.io/italoalmeida0/aweci:default
+          fi
+
           echo "## ✅ Build Complete!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Built:** ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.current_version }}" >> $GITHUB_STEP_SUMMARY
