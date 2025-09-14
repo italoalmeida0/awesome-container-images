@@ -2,7 +2,7 @@
  
 Collection of ready-to-use development container images with modern tooling and optimized configurations.
 
-## Available Images
+## Available App Images 
 
 ### 🧑‍💻 VSCode
 
@@ -84,6 +84,38 @@ services:
 
 - `PORT` - Server port (default: 8080)
 - `TZ` - Timezone
+
+## Available Dev Images 
+
+### 🍺 Homebrew Base
+
+Lightweight base image with Homebrew/Linuxbrew pre-installed for easy package management.
+
+**Why use this?**
+- **~500MB** vs 1.3GB from homebrew/brew official image
+- Official Homebrew installation (unmodified)
+- Optimized for use as a base image
+- Aggressive cleanup to minimize size
+
+**What's included:**
+
+- Minideb base (minimal & secure)
+- Homebrew/Linuxbrew package manager
+- Non-root user setup
+- Build essentials
+- Auto-cleanup wrapper for minimal image size
+
+**As a base image:**
+
+```dockerfile
+FROM ghcr.io/italoalmeida0/aweci:homebrew
+
+# Install packages with auto-cleanup
+RUN brew_install package1 package2
+
+# Or use brew directly
+RUN brew install package && brew cleanup
+```
 
 ---
 
