@@ -1,461 +1,224 @@
 name: Build & Deploy - Auto Versioning
-on:
-  workflow_dispatch:
-    inputs:
-      service:
-        description: "Service to Build & Deploy"
-        required: true
-        default: "default"
-        type: choice
-        options:
-          - default
-          - jupyterlab
-          - jupyterlab-dev
-          - vscode
-          - vscode-dev
-
 permissions:
   contents: write
   packages: write
-
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-
-      - name: Parse service and environment
-        id: parse
-        run: |
-          INPUT="${{ github.event.inputs.service }}"
-
-          if [[ "$INPUT" == "default" ]]; then
-            echo "::warning::Default option selected - This is a safety option"
-            echo "## ⚠️ No Build Performed" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "You selected the **default** option which is a safety mechanism." >> $GITHUB_STEP_SUMMARY
-            echo "Please run the workflow again and select a specific service." >> $GITHUB_STEP_SUMMARY
-            exit 1
-          fi
-
-          echo "skip_all=false" >> $GITHUB_OUTPUT
-
-          if [[ "$INPUT" == *"-dev" ]]; then
-            SERVICE="${INPUT%-dev}"
-            IS_DEV="true"
-            TAG_SUFFIX="-next-dev"
-            REGISTRY="ghcr.io/italoalmeida0/aweci-dev"
-            BUILD_TYPE="🔧 Dev"
-          else
-            SERVICE="$INPUT"
-            IS_DEV="false"
-            TAG_SUFFIX="-next"
-            REGISTRY="ghcr.io/italoalmeida0/aweci"
-            BUILD_TYPE="🚀 Release"
-          fi
-
-          if [[ ! -d "$SERVICE" ]] || [[ ! -f "$SERVICE/Dockerfile" ]]; then
-            echo "❌ Service '$SERVICE' not found or doesn't have a Dockerfile!" >> $GITHUB_STEP_SUMMARY
-            exit 1
-          fi
-
-          echo "service=${SERVICE}" >> $GITHUB_OUTPUT
-          echo "is_dev=${IS_DEV}" >> $GITHUB_OUTPUT
-          echo "tag_suffix=${TAG_SUFFIX}" >> $GITHUB_OUTPUT
-          echo "registry=${REGISTRY}" >> $GITHUB_OUTPUT
-          echo "build_type=${BUILD_TYPE}" >> $GITHUB_OUTPUT
-
-      - name: Get current and next version
-        id: version
-        run: |
-          SERVICE="${{ steps.parse.outputs.service }}"
-          TAG_SUFFIX="${{ steps.parse.outputs.tag_suffix }}"
-
-          LATEST_TAG=$(git tag -l "${SERVICE}-*${TAG_SUFFIX}" --sort=-version:refname | head -n 1)
-
-          if [[ -z "$LATEST_TAG" ]]; then
-            CURRENT_VERSION="0.0.0"
-            NEXT_VERSION="0.0.1"
-            PREVIOUS_TAG=""
-          else
-            CURRENT_VERSION=$(echo $LATEST_TAG | sed "s/${SERVICE}-//" | sed 's/-next.*//' | sed 's/-dev.*//')
-            
-            PREVIOUS_TAG=$(git tag -l "${SERVICE}-*${TAG_SUFFIX}" --sort=-version:refname | head -n 2 | tail -n 1)
-            
-            IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
-            MAJOR=${VERSION_PARTS[0]:-0}
-            MINOR=${VERSION_PARTS[1]:-0}
-            PATCH=${VERSION_PARTS[2]:-0}
-            PATCH=$((PATCH + 1))
-            NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          fi
-
-          CURRENT_TAG="${SERVICE}-${CURRENT_VERSION}${TAG_SUFFIX}"
-          NEXT_TAG="${SERVICE}-${NEXT_VERSION}${TAG_SUFFIX}"
-
-          echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-          echo "next_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
-          echo "current_tag=${CURRENT_TAG}" >> $GITHUB_OUTPUT
-          echo "next_tag=${NEXT_TAG}" >> $GITHUB_OUTPUT
-          echo "previous_tag=${PREVIOUS_TAG}" >> $GITHUB_OUTPUT
-
-          echo "📋 Building version: ${CURRENT_VERSION}"
-          echo "🏷️ Next tag will be: ${NEXT_TAG}"
-          echo "📌 Previous tag was: ${PREVIOUS_TAG:-'First Release'}"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push service image
-        id: docker_build
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./${{ steps.parse.outputs.service }}/Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          cache-from: type=registry,ref=${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-buildcache
-          cache-to: type=registry,ref=${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-buildcache,mode=max
-          tags: |
-            ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.current_version }}
-            ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}
-
-      - name: Validate image healthcheck
-        id: validate_health
-        run: |
-          echo "🏥 Validating healthcheck for the built image..."
-
-          IMAGE="${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.current_version }}"
-
-          docker pull $IMAGE
-
-          CONTAINER_ID=$(docker run -d \
-            --name test-health-${{ github.run_id }} \
-            -e PORT=8080 \
-            -p 8080:8080 \
-            $IMAGE)
-
-          echo "Container started: $CONTAINER_ID"
-
-          for i in 1 2 3 4 5; do
-            sleep 10
-            
-            HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' test-health-${{ github.run_id }} 2>/dev/null || echo "none")
-            echo "Attempt $i/5: Status = $HEALTH_STATUS"
-            
-            if [ "$HEALTH_STATUS" = "healthy" ]; then
-              echo "✅ Container healthy!"
-              docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
-              exit 0
-            elif [ "$HEALTH_STATUS" = "unhealthy" ]; then
-              echo "❌ Container unhealthy!"
-              docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
-              exit 1
-            fi
-          done
-              
-          echo "⏱️ Timeout after 50 seconds - Status: $HEALTH_STATUS"
-          docker logs --tail 20 test-health-${{ github.run_id }}
-          docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
-          exit 1
-
-      - name: Create and push next version tag
-        if: success() && steps.docker_build.outcome == 'success' && steps.validate_health.outcome == 'success'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.version.outputs.next_tag }}" -m "Next: ${{ steps.parse.outputs.build_type }} ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.next_version }}"
-          git push origin "${{ steps.version.outputs.next_tag }}"
-          echo "✅ Next version tag created: ${{ steps.version.outputs.next_tag }}"
-
-      - name: Generate AI Release Notes
-        if: success() && steps.parse.outputs.is_dev == 'false' && steps.docker_build.outcome == 'success' && steps.validate_health.outcome == 'success'
-        id: ai_release
-        run: |
-          SERVICE="${{ steps.parse.outputs.service }}"
-          PREVIOUS_TAG="${{ steps.version.outputs.previous_tag }}"
-          CURRENT_TAG="${{ steps.version.outputs.current_tag }}"
-
-          if [[ -z "$PREVIOUS_TAG" ]]; then
-            echo "📝 First release - using last 30 commits"
-            COMPARE_FROM="HEAD~30"
-            COMPARE_URL="**Initial Release** 🎉"
-          else
-            echo "📝 Comparing from ${PREVIOUS_TAG} to HEAD"
-            COMPARE_FROM="${PREVIOUS_TAG}"
-            COMPARE_URL="[View Full Changelog](https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${CURRENT_TAG})"
-          fi
-
-          COMMITS=$(git log ${COMPARE_FROM}..HEAD --pretty=format:"- %s by %an" -- ${SERVICE}/ | head -30)
-          FILES_CHANGED=$(git diff --stat ${COMPARE_FROM}..HEAD -- ${SERVICE}/ | tail -1)
-          DIFF_SUMMARY=$(git diff ${COMPARE_FROM}..HEAD --shortstat -- ${SERVICE}/)
-
-          read -r -d '' PROMPT << EOM || true
-          You are a release notes generator for Docker container services.
-          Generate professional and exciting release notes for: ${SERVICE} v${{ steps.version.outputs.next_version }}
-
-          Changes summary: ${DIFF_SUMMARY}
-          Files: ${FILES_CHANGED}
-
-          Recent commits:
-          ${COMMITS}
-
-          Instructions:
-          1. Create a catchy 1-2 sentence summary of what's new
-          2. List key highlights organized by category using these emojis:
-             - ✨ New Features
-             - 🐛 Bug Fixes  
-             - ⚡ Performance Improvements
-             - 🔧 Maintenance
-             - 📚 Documentation
-             - 🚨 Breaking Changes (if any)
-          3. Keep it user-friendly, focus on benefits not technical details
-          4. Be enthusiastic but professional
-          5. Maximum 400 words
-          6. Use markdown formatting
-          7. Don't include installation instructions or technical details
-
-          Make developers excited to use this new version!
-          EOM
-
-          PROMPT_JSON=$(echo "$PROMPT" | jq -Rs .)
-
-          echo "🤖 Generating release notes with Gemini 2.5 Flash..."
-
-          RESPONSE=$(curl -s -X POST \
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"contents\": [{
-                \"parts\": [{
-                  \"text\": ${PROMPT_JSON}
-                }]
-              }],
-              \"generationConfig\": {
-                \"temperature\": 0.8,
-                \"maxOutputTokens\": 800,
-                \"topP\": 0.95
-              }
-            }")
-
-          RELEASE_NOTES=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "Error generating release notes"')
-
-          if [[ "$RELEASE_NOTES" == "Error generating release notes" ]]; then
-            echo "⚠️ Failed to generate AI release notes, using fallback"
-            RELEASE_NOTES="## ${SERVICE} v${{ steps.version.outputs.next_version }}
-
-            This release includes various improvements and updates to the ${SERVICE} service.
-
-            ### 📋 Changes
-            ${COMMITS}
-
-            For detailed changes, please check the changelog link below."
-          fi
-
-          cat << EOF > release_notes.md
-          ${RELEASE_NOTES}
-
-          ---
-
-          ## 📦 Docker Image
-
-          Pull the latest version:
-          \`\`\`bash
-          docker pull ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.current_version }}
-          \`\`\`
-
-          Or use the latest tag:
-          \`\`\`bash
-          docker pull ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}
-          \`\`\`
-
-          ## ✅ Quality Assurance
-          - Container health validated before release
-          - Multi-platform support: \`linux/amd64\`, \`linux/arm64\`
-          - Build cache optimized for faster deployments
-
-          ## 📊 Changelog
-          ${COMPARE_URL}
-
-          ## 🏷️ Version Info
-          - **Released:** v${{ steps.version.outputs.current_version }}
-          - **Next:** v${{ steps.version.outputs.next_version }}
-          - **Registry:** ${{ steps.parse.outputs.registry }}
-          EOF
-
-          echo "✨ Release notes generated successfully!"
-
-      - name: Create GitHub Release
-        if: success() && steps.parse.outputs.is_dev == 'false' && steps.docker_build.outcome == 'success' && steps.validate_health.outcome == 'success' && steps.ai_release.outcome == 'success'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ steps.version.outputs.current_tag }}
-          name: "${{ steps.parse.outputs.service }} v${{ steps.version.outputs.current_version }}"
-          body_path: release_notes.md
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Discover and collect all services
-        id: discover
-        run: |
-          echo "🔍 Discovering all services dynamically..."
-          python3 << 'EOF'
-          import os
-          import subprocess
-          from datetime import datetime
-
-          services = []
-          for item in os.listdir('.'):
-              if os.path.isdir(item) and not item.startswith('.') and not item.startswith('_'):
-                  if os.path.exists(f'{item}/Dockerfile'):
-                      services.append(item)
-
-          production_versions = {}
-          development_versions = {}
-
-          for service in services:
-            prod_tag = subprocess.run(f'git tag -l "{service}-*-next" | grep -v "\-dev" | sort -V | tail -n 1', 
-                                    shell=True, capture_output=True, text=True).stdout.strip()
-            dev_tag = subprocess.run(f'git tag -l "{service}-*-next-dev" | sort -V | tail -n 1', 
-                                    shell=True, capture_output=True, text=True).stdout.strip()
-            
-            def find_docker_version(service, tag, registry_suffix=""):
-              if not tag:
-                return "none"
-              
-              suffixes_to_remove = ["-next-dev", "-next"]
-              tag_version = tag.replace(f"{service}-", "")
-              
-              for suffix in suffixes_to_remove:
-                if suffix in tag_version:
-                  tag_version = tag_version.replace(suffix, "")
-                  break
-            
-              try:
-                parts = tag_version.split('.')
-                major, minor, patch = parts[0], parts[1], int(parts[2])
-              except (IndexError, ValueError):
-                return "none"
-              
-              for i in range(patch, -1, -1):
-                check_version = f"{major}.{minor}.{i}"
-                registry = f"ghcr.io/italoalmeida0/aweci{registry_suffix}"
-                  
-                result = subprocess.run(
-                  f'docker manifest inspect {registry}:{service}-{check_version} 2>/dev/null',
-                  shell=True, 
-                  capture_output=True
-                )
-                
-                if result.returncode == 0:
-                  return check_version
-              
-              return "none"
-
-            prod_version = find_docker_version(service, prod_tag, registry_suffix="")
-            dev_version = find_docker_version(service, dev_tag, registry_suffix="-dev")
-            
-            production_versions[service] = prod_version
-            development_versions[service] = dev_version
-
-          toml_content = f"""# Latest Versions | 🪸 AWECI - Awesome Container Images 🐋
-          # Generated at {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")}
-
-          [metadata]
-          timestamp = "{datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}"
-          total_services = {len(services)}
-
-          [services]
-          available = {services}
-
-          [versions.production]"""
-
-          for service in sorted(services):
-            toml_content += f'\n{service} = "{production_versions[service]}"'
-
-          toml_content += "\n\n[versions.development]"
-
-          for service in sorted(services):
-            toml_content += f'\n{service} = "{development_versions[service]}"'
-
-          toml_content += "\n"
-
-          print("Generated TOML:")
-          print(toml_content)
-
-          with open('registry-info.toml', 'w') as f:
-            f.write(toml_content)
-
-          print("\nTOML saved to registry-info.toml")
-          EOF
-
-      - name: Create default Dockerfile
-        run: |
-          cat << 'EOF' > Dockerfile.default
-          FROM busybox:latest
-          COPY registry-info.toml /info.toml
-          CMD cat /info.toml
-          EOF
-
-      - name: Update PROD latest
-        if: steps.parse.outputs.is_dev == 'false'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile.default
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/italoalmeida0/aweci:latest
-            ghcr.io/italoalmeida0/aweci:default
-
-      - name: Update DEV latest
-        if: steps.parse.outputs.is_dev == 'true'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile.default
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/italoalmeida0/aweci-dev:latest
-            ghcr.io/italoalmeida0/aweci-dev:default
-
-      - name: Final Summary
-        run: |
-          if [[ "${{ steps.parse.outputs.is_dev }}" == "true" ]]; then
-            docker pull ghcr.io/italoalmeida0/aweci-dev:default
-          else
-            docker pull ghcr.io/italoalmeida0/aweci:default
-          fi
-
-          echo "## ✅ Build Complete!" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Built:** ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.current_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Next Version:** v${{ steps.version.outputs.next_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Type:** ${{ steps.parse.outputs.build_type }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Tag:** ${{ steps.version.outputs.next_tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Health:** ✅ Validated" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📦 Registry Status:" >> $GITHUB_STEP_SUMMARY
-          echo '```toml' >> $GITHUB_STEP_SUMMARY
-
-          if [[ "${{ steps.parse.outputs.is_dev }}" == "true" ]]; then
-            docker run --rm ghcr.io/italoalmeida0/aweci-dev:default >> $GITHUB_STEP_SUMMARY
-          else
-            docker run --rm ghcr.io/italoalmeida0/aweci:default >> $GITHUB_STEP_SUMMARY
-          fi
-
-          echo '```' >> $GITHUB_STEP_SUMMARY
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+    - name: Parse service and environment
+      id: parse
+      run: "INPUT=\"${{ github.event.inputs.service }}\"\n\nif [[ \"$INPUT\" == \"default\" ]]; then\n  echo \"::warning::Default\
+        \ option selected - This is a safety option\"\n  echo \"## \u26A0\uFE0F No Build Performed\" >> $GITHUB_STEP_SUMMARY\n\
+        \  echo \"\" >> $GITHUB_STEP_SUMMARY\n  echo \"You selected the **default** option which is a safety mechanism.\"\
+        \ >> $GITHUB_STEP_SUMMARY\n  echo \"Please run the workflow again and select a specific service.\" >> $GITHUB_STEP_SUMMARY\n\
+        \  exit 1\nfi\n\necho \"skip_all=false\" >> $GITHUB_OUTPUT\n\nif [[ \"$INPUT\" == *\"-dev\" ]]; then\n  SERVICE=\"\
+        ${INPUT%-dev}\"\n  IS_DEV=\"true\"\n  TAG_SUFFIX=\"-next-dev\"\n  REGISTRY=\"ghcr.io/italoalmeida0/aweci-dev\"\n \
+        \ BUILD_TYPE=\"\U0001F527 Dev\"\nelse\n  SERVICE=\"$INPUT\"\n  IS_DEV=\"false\"\n  TAG_SUFFIX=\"-next\"\n  REGISTRY=\"\
+        ghcr.io/italoalmeida0/aweci\"\n  BUILD_TYPE=\"\U0001F680 Release\"\nfi\n\nif [[ ! -d \"$SERVICE\" ]] || [[ ! -f \"\
+        $SERVICE/Dockerfile\" ]]; then\n  echo \"\u274C Service '$SERVICE' not found or doesn't have a Dockerfile!\" >> $GITHUB_STEP_SUMMARY\n\
+        \  exit 1\nfi\n\necho \"service=${SERVICE}\" >> $GITHUB_OUTPUT\necho \"is_dev=${IS_DEV}\" >> $GITHUB_OUTPUT\necho\
+        \ \"tag_suffix=${TAG_SUFFIX}\" >> $GITHUB_OUTPUT\necho \"registry=${REGISTRY}\" >> $GITHUB_OUTPUT\necho \"build_type=${BUILD_TYPE}\"\
+        \ >> $GITHUB_OUTPUT\n"
+    - name: Get current and next version
+      id: version
+      run: "SERVICE=\"${{ steps.parse.outputs.service }}\"\nTAG_SUFFIX=\"${{ steps.parse.outputs.tag_suffix }}\"\n\nLATEST_TAG=$(git\
+        \ tag -l \"${SERVICE}-*${TAG_SUFFIX}\" --sort=-version:refname | head -n 1)\n\nif [[ -z \"$LATEST_TAG\" ]]; then\n\
+        \  CURRENT_VERSION=\"0.0.0\"\n  NEXT_VERSION=\"0.0.1\"\n  PREVIOUS_TAG=\"\"\nelse\n  CURRENT_VERSION=$(echo $LATEST_TAG\
+        \ | sed \"s/${SERVICE}-//\" | sed 's/-next.*//' | sed 's/-dev.*//')\n  \n  PREVIOUS_TAG=$(git tag -l \"${SERVICE}-*${TAG_SUFFIX}\"\
+        \ --sort=-version:refname | head -n 2 | tail -n 1)\n  \n  IFS='.' read -ra VERSION_PARTS <<< \"$CURRENT_VERSION\"\n\
+        \  MAJOR=${VERSION_PARTS[0]:-0}\n  MINOR=${VERSION_PARTS[1]:-0}\n  PATCH=${VERSION_PARTS[2]:-0}\n  PATCH=$((PATCH\
+        \ + 1))\n  NEXT_VERSION=\"${MAJOR}.${MINOR}.${PATCH}\"\nfi\n\nCURRENT_TAG=\"${SERVICE}-${CURRENT_VERSION}${TAG_SUFFIX}\"\
+        \nNEXT_TAG=\"${SERVICE}-${NEXT_VERSION}${TAG_SUFFIX}\"\n\necho \"current_version=${CURRENT_VERSION}\" >> $GITHUB_OUTPUT\n\
+        echo \"next_version=${NEXT_VERSION}\" >> $GITHUB_OUTPUT\necho \"current_tag=${CURRENT_TAG}\" >> $GITHUB_OUTPUT\necho\
+        \ \"next_tag=${NEXT_TAG}\" >> $GITHUB_OUTPUT\necho \"previous_tag=${PREVIOUS_TAG}\" >> $GITHUB_OUTPUT\n\necho \"\U0001F4CB\
+        \ Building version: ${CURRENT_VERSION}\"\necho \"\U0001F3F7\uFE0F Next tag will be: ${NEXT_TAG}\"\necho \"\U0001F4CC\
+        \ Previous tag was: ${PREVIOUS_TAG:-'First Release'}\"\n"
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Build and push service image
+      id: docker_build
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./${{ steps.parse.outputs.service }}/Dockerfile
+        push: true
+        platforms: linux/amd64,linux/arm64
+        cache-from: type=registry,ref=${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-buildcache
+        cache-to: type=registry,ref=${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-buildcache,mode=max
+        tags: '${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.current_version
+          }}
+
+          ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}
+
+          '
+    - name: Validate image healthcheck
+      id: validate_health
+      run: "echo \"\U0001F3E5 Validating healthcheck for the built image...\"\n\nIMAGE=\"${{ steps.parse.outputs.registry\
+        \ }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.current_version }}\"\n\ndocker pull $IMAGE\n\nCONTAINER_ID=$(docker\
+        \ run -d \\\n  --name test-health-${{ github.run_id }} \\\n  -e PORT=8080 \\\n  -p 8080:8080 \\\n  $IMAGE)\n\necho\
+        \ \"Container started: $CONTAINER_ID\"\n\nfor i in 1 2 3 4 5; do\n  sleep 10\n  \n  HEALTH_STATUS=$(docker inspect\
+        \ --format='{{.State.Health.Status}}' test-health-${{ github.run_id }} 2>/dev/null || echo \"none\")\n  echo \"Attempt\
+        \ $i/5: Status = $HEALTH_STATUS\"\n  \n  if [ \"$HEALTH_STATUS\" = \"healthy\" ]; then\n    echo \"\u2705 Container\
+        \ healthy!\"\n    docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1\n    exit 0\n  elif [ \"$HEALTH_STATUS\"\
+        \ = \"unhealthy\" ]; then\n    echo \"\u274C Container unhealthy!\"\n    docker rm -f test-health-${{ github.run_id\
+        \ }} >/dev/null 2>&1\n    exit 1\n  fi\ndone\n    \necho \"\u23F1\uFE0F Timeout after 50 seconds - Status: $HEALTH_STATUS\"\
+        \ndocker logs --tail 20 test-health-${{ github.run_id }}\ndocker rm -f test-health-${{ github.run_id }} >/dev/null\
+        \ 2>&1\nexit 1\n"
+    - name: Create and push next version tag
+      if: success() && steps.docker_build.outcome == 'success' && steps.validate_health.outcome == 'success'
+      run: "git config user.name \"github-actions[bot]\"\ngit config user.email \"github-actions[bot]@users.noreply.github.com\"\
+        \ngit tag -a \"${{ steps.version.outputs.next_tag }}\" -m \"Next: ${{ steps.parse.outputs.build_type }} ${{ steps.parse.outputs.service\
+        \ }} v${{ steps.version.outputs.next_version }}\"\ngit push origin \"${{ steps.version.outputs.next_tag }}\"\necho\
+        \ \"\u2705 Next version tag created: ${{ steps.version.outputs.next_tag }}\"\n"
+    - name: Generate AI Release Notes
+      if: success() && steps.parse.outputs.is_dev == 'false' && steps.docker_build.outcome == 'success' && steps.validate_health.outcome
+        == 'success'
+      id: ai_release
+      run: "SERVICE=\"${{ steps.parse.outputs.service }}\"\nPREVIOUS_TAG=\"${{ steps.version.outputs.previous_tag }}\"\nCURRENT_TAG=\"\
+        ${{ steps.version.outputs.current_tag }}\"\n\nif [[ -z \"$PREVIOUS_TAG\" ]]; then\n  echo \"\U0001F4DD First release\
+        \ - using last 30 commits\"\n  COMPARE_FROM=\"HEAD~30\"\n  COMPARE_URL=\"**Initial Release** \U0001F389\"\nelse\n\
+        \  echo \"\U0001F4DD Comparing from ${PREVIOUS_TAG} to HEAD\"\n  COMPARE_FROM=\"${PREVIOUS_TAG}\"\n  COMPARE_URL=\"\
+        [View Full Changelog](https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${CURRENT_TAG})\"\nfi\n\
+        \nCOMMITS=$(git log ${COMPARE_FROM}..HEAD --pretty=format:\"- %s by %an\" -- ${SERVICE}/ | head -30)\nFILES_CHANGED=$(git\
+        \ diff --stat ${COMPARE_FROM}..HEAD -- ${SERVICE}/ | tail -1)\nDIFF_SUMMARY=$(git diff ${COMPARE_FROM}..HEAD --shortstat\
+        \ -- ${SERVICE}/)\n\nread -r -d '' PROMPT << EOM || true\nYou are a release notes generator for Docker container services.\n\
+        Generate professional and exciting release notes for: ${SERVICE} v${{ steps.version.outputs.next_version }}\n\nChanges\
+        \ summary: ${DIFF_SUMMARY}\nFiles: ${FILES_CHANGED}\n\nRecent commits:\n${COMMITS}\n\nInstructions:\n1. Create a catchy\
+        \ 1-2 sentence summary of what's new\n2. List key highlights organized by category using these emojis:\n   - \u2728\
+        \ New Features\n   - \U0001F41B Bug Fixes  \n   - \u26A1 Performance Improvements\n   - \U0001F527 Maintenance\n \
+        \  - \U0001F4DA Documentation\n   - \U0001F6A8 Breaking Changes (if any)\n3. Keep it user-friendly, focus on benefits\
+        \ not technical details\n4. Be enthusiastic but professional\n5. Maximum 400 words\n6. Use markdown formatting\n7.\
+        \ Don't include installation instructions or technical details\n\nMake developers excited to use this new version!\n\
+        EOM\n\nPROMPT_JSON=$(echo \"$PROMPT\" | jq -Rs .)\n\necho \"\U0001F916 Generating release notes with Gemini 2.5 Flash...\"\
+        \n\nRESPONSE=$(curl -s -X POST \\\n  \"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${{\
+        \ secrets.GEMINI_API_KEY }}\" \\\n  -H \"Content-Type: application/json\" \\\n  -d \"{\n    \\\"contents\\\": [{\n\
+        \      \\\"parts\\\": [{\n        \\\"text\\\": ${PROMPT_JSON}\n      }]\n    }],\n    \\\"generationConfig\\\": {\n\
+        \      \\\"temperature\\\": 0.8,\n      \\\"maxOutputTokens\\\": 800,\n      \\\"topP\\\": 0.95\n    }\n  }\")\n\n\
+        RELEASE_NOTES=$(echo \"$RESPONSE\" | jq -r '.candidates[0].content.parts[0].text // \"Error generating release notes\"\
+        ')\n\nif [[ \"$RELEASE_NOTES\" == \"Error generating release notes\" ]]; then\n  echo \"\u26A0\uFE0F Failed to generate\
+        \ AI release notes, using fallback\"\n  RELEASE_NOTES=\"## ${SERVICE} v${{ steps.version.outputs.next_version }}\n\
+        \n  This release includes various improvements and updates to the ${SERVICE} service.\n\n  ### \U0001F4CB Changes\n\
+        \  ${COMMITS}\n\n  For detailed changes, please check the changelog link below.\"\nfi\n\ncat << EOF > release_notes.md\n\
+        ${RELEASE_NOTES}\n\n---\n\n## \U0001F4E6 Docker Image\n\nPull the latest version:\n\\`\\`\\`bash\ndocker pull ${{\
+        \ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.current_version }}\n\
+        \\`\\`\\`\n\nOr use the latest tag:\n\\`\\`\\`bash\ndocker pull ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service\
+        \ }}\n\\`\\`\\`\n\n## \u2705 Quality Assurance\n- Container health validated before release\n- Multi-platform support:\
+        \ \\`linux/amd64\\`, \\`linux/arm64\\`\n- Build cache optimized for faster deployments\n\n## \U0001F4CA Changelog\n\
+        ${COMPARE_URL}\n\n## \U0001F3F7\uFE0F Version Info\n- **Released:** v${{ steps.version.outputs.current_version }}\n\
+        - **Next:** v${{ steps.version.outputs.next_version }}\n- **Registry:** ${{ steps.parse.outputs.registry }}\nEOF\n\
+        \necho \"\u2728 Release notes generated successfully!\"\n"
+    - name: Create GitHub Release
+      if: success() && steps.parse.outputs.is_dev == 'false' && steps.docker_build.outcome == 'success' && steps.validate_health.outcome
+        == 'success' && steps.ai_release.outcome == 'success'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.version.outputs.current_tag }}
+        name: ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.current_version }}
+        body_path: release_notes.md
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Discover and collect all services
+      id: discover
+      run: "echo \"\U0001F50D Discovering all services dynamically...\"\npython3 << 'EOF'\nimport os\nimport subprocess\n\
+        from datetime import datetime\n\nservices = []\nfor item in os.listdir('.'):\n    if os.path.isdir(item) and not item.startswith('.')\
+        \ and not item.startswith('_'):\n        if os.path.exists(f'{item}/Dockerfile'):\n            services.append(item)\n\
+        \nproduction_versions = {}\ndevelopment_versions = {}\n\nfor service in services:\n  prod_tag = subprocess.run(f'git\
+        \ tag -l \"{service}-*-next\" | grep -v \"\\-dev\" | sort -V | tail -n 1', \n                          shell=True,\
+        \ capture_output=True, text=True).stdout.strip()\n  dev_tag = subprocess.run(f'git tag -l \"{service}-*-next-dev\"\
+        \ | sort -V | tail -n 1', \n                          shell=True, capture_output=True, text=True).stdout.strip()\n\
+        \  \n  def find_docker_version(service, tag, registry_suffix=\"\"):\n    if not tag:\n      return \"none\"\n    \n\
+        \    suffixes_to_remove = [\"-next-dev\", \"-next\"]\n    tag_version = tag.replace(f\"{service}-\", \"\")\n    \n\
+        \    for suffix in suffixes_to_remove:\n      if suffix in tag_version:\n        tag_version = tag_version.replace(suffix,\
+        \ \"\")\n        break\n  \n    try:\n      parts = tag_version.split('.')\n      major, minor, patch = parts[0],\
+        \ parts[1], int(parts[2])\n    except (IndexError, ValueError):\n      return \"none\"\n    \n    for i in range(patch,\
+        \ -1, -1):\n      check_version = f\"{major}.{minor}.{i}\"\n      registry = f\"ghcr.io/italoalmeida0/aweci{registry_suffix}\"\
+        \n        \n      result = subprocess.run(\n        f'docker manifest inspect {registry}:{service}-{check_version}\
+        \ 2>/dev/null',\n        shell=True, \n        capture_output=True\n      )\n      \n      if result.returncode ==\
+        \ 0:\n        return check_version\n    \n    return \"none\"\n\n  prod_version = find_docker_version(service, prod_tag,\
+        \ registry_suffix=\"\")\n  dev_version = find_docker_version(service, dev_tag, registry_suffix=\"-dev\")\n  \n  production_versions[service]\
+        \ = prod_version\n  development_versions[service] = dev_version\n\ntoml_content = f\"\"\"# Latest Versions | \U0001FAB8\
+        \ AWECI - Awesome Container Images \U0001F40B\n# Generated at {datetime.utcnow().strftime(\"%Y-%m-%d %H:%M:%S UTC\"\
+        )}\n\n[metadata]\ntimestamp = \"{datetime.utcnow().strftime(\"%Y-%m-%dT%H:%M:%SZ\")}\"\ntotal_services = {len(services)}\n\
+        \n[services]\navailable = {services}\n\n[versions.production]\"\"\"\n\nfor service in sorted(services):\n  toml_content\
+        \ += f'\\n{service} = \"{production_versions[service]}\"'\n\ntoml_content += \"\\n\\n[versions.development]\"\n\n\
+        for service in sorted(services):\n  toml_content += f'\\n{service} = \"{development_versions[service]}\"'\n\ntoml_content\
+        \ += \"\\n\"\n\nprint(\"Generated TOML:\")\nprint(toml_content)\n\nwith open('registry-info.toml', 'w') as f:\n  f.write(toml_content)\n\
+        \nprint(\"\\nTOML saved to registry-info.toml\")\nEOF\n"
+    - name: Create default Dockerfile
+      run: 'cat << ''EOF'' > Dockerfile.default
+
+        FROM busybox:latest
+
+        COPY registry-info.toml /info.toml
+
+        CMD cat /info.toml
+
+        EOF
+
+        '
+    - name: Update PROD latest
+      if: steps.parse.outputs.is_dev == 'false'
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile.default
+        push: true
+        platforms: linux/amd64,linux/arm64
+        tags: 'ghcr.io/italoalmeida0/aweci:latest
+
+          ghcr.io/italoalmeida0/aweci:default
+
+          '
+    - name: Update DEV latest
+      if: steps.parse.outputs.is_dev == 'true'
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile.default
+        push: true
+        platforms: linux/amd64,linux/arm64
+        tags: 'ghcr.io/italoalmeida0/aweci-dev:latest
+
+          ghcr.io/italoalmeida0/aweci-dev:default
+
+          '
+    - name: Final Summary
+      run: "if [[ \"${{ steps.parse.outputs.is_dev }}\" == \"true\" ]]; then\n  docker pull ghcr.io/italoalmeida0/aweci-dev:default\n\
+        else\n  docker pull ghcr.io/italoalmeida0/aweci:default\nfi\n\necho \"## \u2705 Build Complete!\" >> $GITHUB_STEP_SUMMARY\n\
+        echo \"\" >> $GITHUB_STEP_SUMMARY\necho \"**Built:** ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.current_version\
+        \ }}\" >> $GITHUB_STEP_SUMMARY\necho \"**Next Version:** v${{ steps.version.outputs.next_version }}\" >> $GITHUB_STEP_SUMMARY\n\
+        echo \"**Type:** ${{ steps.parse.outputs.build_type }}\" >> $GITHUB_STEP_SUMMARY\necho \"**Tag:** ${{ steps.version.outputs.next_tag\
+        \ }}\" >> $GITHUB_STEP_SUMMARY\necho \"**Health:** \u2705 Validated\" >> $GITHUB_STEP_SUMMARY\necho \"\" >> $GITHUB_STEP_SUMMARY\n\
+        echo \"### \U0001F4E6 Registry Status:\" >> $GITHUB_STEP_SUMMARY\necho '```toml' >> $GITHUB_STEP_SUMMARY\n\nif [[\
+        \ \"${{ steps.parse.outputs.is_dev }}\" == \"true\" ]]; then\n  docker run --rm ghcr.io/italoalmeida0/aweci-dev:default\
+        \ >> $GITHUB_STEP_SUMMARY\nelse\n  docker run --rm ghcr.io/italoalmeida0/aweci:default >> $GITHUB_STEP_SUMMARY\nfi\n\
+        \necho '```' >> $GITHUB_STEP_SUMMARY\n"
+'on':
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Service to Build & Deploy
+        required: true
+        default: default
+        type: choice
+        options:
+        - default
+        - homebrew
+        - homebrew-dev
+        - jupyterlab
+        - jupyterlab-dev
+        - vscode
+        - vscode-dev
