@@ -1,9 +1,9 @@
-name: Build & Deploy - Auto Versioning
+name: Build & Deploy - Service
 on:
   workflow_dispatch:
     inputs:
       service:
-        description: "Service to Build & Deploy"
+        description: "Build & Deploy - Service"
         required: true
         default: "default"
         type: choice
@@ -21,8 +21,20 @@ permissions:
   packages: write
 
 jobs:
-  build-and-push:
-    runs-on: buildjet-4vcpu-ubuntu-2204
+  prepare:
+    runs-on: buildjet-2vcpu-ubuntu-2204
+    outputs:
+      service: ${{ steps.parse.outputs.service }}
+      is_dev: ${{ steps.parse.outputs.is_dev }}
+      tag_suffix: ${{ steps.parse.outputs.tag_suffix }}
+      registry: ${{ steps.parse.outputs.registry }}
+      build_type: ${{ steps.parse.outputs.build_type }}
+      current_version: ${{ steps.version.outputs.current_version }}
+      next_version: ${{ steps.version.outputs.next_version }}
+      current_tag: ${{ steps.version.outputs.current_tag }}
+      next_tag: ${{ steps.version.outputs.next_tag }}
+      previous_tag: ${{ steps.version.outputs.previous_tag }}
+      should_build: ${{ steps.parse.outputs.should_build }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -40,10 +52,11 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "You selected the **default** option which is a safety mechanism." >> $GITHUB_STEP_SUMMARY
             echo "Please run the workflow again and select a specific service." >> $GITHUB_STEP_SUMMARY
-            exit 1
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            exit 0
           fi
 
-          echo "skip_all=false" >> $GITHUB_OUTPUT
+          echo "should_build=true" >> $GITHUB_OUTPUT
 
           if [[ "$INPUT" == *"-dev" ]]; then
             SERVICE="${INPUT%-dev}"
@@ -61,6 +74,7 @@ jobs:
 
           if [[ ! -d "$SERVICE" ]] || [[ ! -f "$SERVICE/Dockerfile" ]]; then
             echo "❌ Service '$SERVICE' not found or doesn't have a Dockerfile!" >> $GITHUB_STEP_SUMMARY
+            echo "should_build=false" >> $GITHUB_OUTPUT
             exit 1
           fi
 
@@ -72,6 +86,7 @@ jobs:
 
       - name: Get current and next version
         id: version
+        if: steps.parse.outputs.should_build == 'true'
         run: |
           SERVICE="${{ steps.parse.outputs.service }}"
           TAG_SUFFIX="${{ steps.parse.outputs.tag_suffix }}"
@@ -108,6 +123,24 @@ jobs:
           echo "🏷️ Next tag will be: ${NEXT_TAG}"
           echo "📌 Previous tag was: ${PREVIOUS_TAG:-'First Release'}"
 
+
+  build-arch:
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: buildjet-4vcpu-ubuntu-2204
+            arch: amd64
+          - platform: linux/arm64
+            runner: buildjet-4vcpu-ubuntu-2204-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -118,30 +151,71 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push service image
-        id: docker_build
+      - name: Build and push architecture-specific image
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./${{ steps.parse.outputs.service }}/Dockerfile
+          file: ./${{ needs.prepare.outputs.service }}/Dockerfile
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           cache-from: |
-            type=registry,ref=${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-buildcache
-            type=gha
+            type=registry,ref=${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-buildcache-${{ matrix.arch }}
+            type=gha,scope=${{ matrix.arch }}
           cache-to: |
-            type=registry,ref=${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-buildcache,mode=max
-            type=gha,mode=max
+            type=registry,ref=${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-buildcache-${{ matrix.arch }},mode=max
+            type=gha,mode=max,scope=${{ matrix.arch }}
           tags: |
-            ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.current_version }}
-            ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}
+            ${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ needs.prepare.outputs.current_version }}-${{ matrix.arch }}
 
+  # ============================================
+  create-manifest:
+    needs: [prepare, build-arch]
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: buildjet-2vcpu-ubuntu-2204
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push multi-arch manifest
+        run: |
+          REGISTRY="${{ needs.prepare.outputs.registry }}"
+          SERVICE="${{ needs.prepare.outputs.service }}"
+          VERSION="${{ needs.prepare.outputs.current_version }}"
+
+          # Criar manifest para a versão específica
+          docker manifest create \
+            ${REGISTRY}:${SERVICE}-${VERSION} \
+            ${REGISTRY}:${SERVICE}-${VERSION}-amd64 \
+            ${REGISTRY}:${SERVICE}-${VERSION}-arm64
+
+          docker manifest push ${REGISTRY}:${SERVICE}-${VERSION}
+
+          # Criar manifest para a tag latest
+          docker manifest create \
+            ${REGISTRY}:${SERVICE} \
+            ${REGISTRY}:${SERVICE}-${VERSION}-amd64 \
+            ${REGISTRY}:${SERVICE}-${VERSION}-arm64
+
+          docker manifest push ${REGISTRY}:${SERVICE}
+
+          echo "✅ Multi-arch manifest created and pushed"
+
+
+  validate:
+    needs: [prepare, create-manifest]
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: buildjet-2vcpu-ubuntu-2204-arm
+    steps:
       - name: Validate image healthcheck
         id: validate_health
         run: |
           echo "🏥 Validating healthcheck for the built image..."
 
-          IMAGE="${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.current_version }}"
+          IMAGE="${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ needs.prepare.outputs.current_version }}"
 
           docker pull $IMAGE
 
@@ -165,32 +239,42 @@ jobs:
               exit 0
             elif [ "$HEALTH_STATUS" = "unhealthy" ]; then
               echo "❌ Container unhealthy!"
+              docker logs --tail 50 test-health-${{ github.run_id }}
               docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
               exit 1
             fi
           done
               
           echo "⏱️ Timeout after 50 seconds - Status: $HEALTH_STATUS"
-          docker logs --tail 20 test-health-${{ github.run_id }}
+          docker logs --tail 50 test-health-${{ github.run_id }}
           docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
           exit 1
 
+  finalize:
+    needs: [prepare, validate]
+    if: needs.prepare.outputs.should_build == 'true' && success()
+    runs-on: buildjet-2vcpu-ubuntu-2204
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
       - name: Create and push next version tag
-        if: success() && steps.docker_build.outcome == 'success' && steps.validate_health.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.version.outputs.next_tag }}" -m "Next: ${{ steps.parse.outputs.build_type }} ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.next_version }}"
-          git push origin "${{ steps.version.outputs.next_tag }}"
-          echo "✅ Next version tag created: ${{ steps.version.outputs.next_tag }}"
+          git tag -a "${{ needs.prepare.outputs.next_tag }}" -m "Next: ${{ needs.prepare.outputs.build_type }} ${{ needs.prepare.outputs.service }} v${{ needs.prepare.outputs.next_version }}"
+          git push origin "${{ needs.prepare.outputs.next_tag }}"
+          echo "✅ Next version tag created: ${{ needs.prepare.outputs.next_tag }}"
 
       - name: Generate AI Release Notes
-        if: success() && steps.parse.outputs.is_dev == 'false' && steps.docker_build.outcome == 'success' && steps.validate_health.outcome == 'success'
+        if: needs.prepare.outputs.is_dev == 'false'
         id: ai_release
         run: |
-          SERVICE="${{ steps.parse.outputs.service }}"
-          PREVIOUS_TAG="${{ steps.version.outputs.previous_tag }}"
-          CURRENT_TAG="${{ steps.version.outputs.current_tag }}"
+          SERVICE="${{ needs.prepare.outputs.service }}"
+          PREVIOUS_TAG="${{ needs.prepare.outputs.previous_tag }}"
+          CURRENT_TAG="${{ needs.prepare.outputs.current_tag }}"
 
           if [[ -z "$PREVIOUS_TAG" ]]; then
             echo "📝 First release - using last 30 commits"
@@ -208,7 +292,7 @@ jobs:
 
           read -r -d '' PROMPT << EOM || true
           You are a release notes generator for Docker container services.
-          Generate professional and exciting release notes for the JUST RELEASED version: ${SERVICE} v${{ steps.version.outputs.current_version }}
+          Generate professional and exciting release notes for the JUST RELEASED version: ${SERVICE} v${{ needs.prepare.outputs.current_version }}
 
           IMPORTANT: This version has ALREADY been built and released. Write in PAST TENSE about what WAS accomplished in this release.
           DO NOT talk about future versions or upcoming features.
@@ -268,7 +352,7 @@ jobs:
 
           if [[ "$RELEASE_NOTES" == "Error generating release notes" ]]; then
             echo "⚠️ Failed to generate AI release notes, using fallback"
-            RELEASE_NOTES="## ${SERVICE} v${{ steps.version.outputs.next_version }}
+            RELEASE_NOTES="## ${SERVICE} v${{ needs.prepare.outputs.next_version }}
 
             This release includes various improvements and updates to the ${SERVICE} service.
 
@@ -287,47 +371,47 @@ jobs:
 
           Pull the latest version:
           \`\`\`bash
-          docker pull ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.current_version }}
+          docker pull ${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ needs.prepare.outputs.current_version }}
           \`\`\`
 
           Or use the latest tag:
           \`\`\`bash
-          docker pull ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}
+          docker pull ${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}
           \`\`\`
 
           ## ✅ Quality Assurance
           - Container health validated before release
           - Multi-platform support: \`linux/amd64\`, \`linux/arm64\`
           - Build cache optimized for faster deployments
+          - Parallel architecture builds for faster CI/CD
 
           ## 📊 Changelog
           ${COMPARE_URL}
 
           ## 🏷️ Version Info
-          - **Current Release:** v${{ steps.version.outputs.current_version }}
+          - **Current Release:** v${{ needs.prepare.outputs.current_version }}
           - **Previous Version:** ${PREVIOUS_TAG:-'Initial Release'}
-          - **Registry:** ${{ steps.parse.outputs.registry }}
+          - **Registry:** ${{ needs.prepare.outputs.registry }}
           EOF
 
           echo "✨ Release notes generated successfully!"
 
       - name: Create GitHub Release
-        if: success() && steps.parse.outputs.is_dev == 'false' && steps.docker_build.outcome == 'success' && steps.validate_health.outcome == 'success' && steps.ai_release.outcome == 'success'
+        if: needs.prepare.outputs.is_dev == 'false' && steps.ai_release.outcome == 'success'
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.version.outputs.current_tag }}
-          name: "${{ steps.parse.outputs.service }} v${{ steps.version.outputs.current_version }}"
+          tag_name: ${{ needs.prepare.outputs.current_tag }}
+          name: "${{ needs.prepare.outputs.service }} v${{ needs.prepare.outputs.current_version }}"
           body_path: release_notes.md
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Discover and collect all services
-        id: discover
+      - name: Update Registry Info
         run: |
           echo "🔍 Discovering all services dynamically..."
-          IS_DEV="${{ steps.parse.outputs.is_dev }}"
+          IS_DEV="${{ needs.prepare.outputs.is_dev }}"
           python3 << 'EOF'
           import os
           import subprocess
@@ -419,7 +503,7 @@ jobs:
           print("\nTOML saved to registry-info.toml")
           EOF
         env:
-          IS_DEV: ${{ steps.parse.outputs.is_dev }}
+          IS_DEV: ${{ needs.prepare.outputs.is_dev }}
 
       - name: Create default Dockerfile
         run: |
@@ -429,20 +513,17 @@ jobs:
           CMD cat /info.toml
           EOF
 
-      - name: Update PROD latest
-        if: steps.parse.outputs.is_dev == 'false'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile.default
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/italoalmeida0/aweci:latest
-            ghcr.io/italoalmeida0/aweci:default
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Update DEV latest
-        if: steps.parse.outputs.is_dev == 'true'
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Registry Latest Tags
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -450,32 +531,23 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/italoalmeida0/aweci-dev:latest
-            ghcr.io/italoalmeida0/aweci-dev:default
+            ${{ needs.prepare.outputs.registry }}:latest
+            ${{ needs.prepare.outputs.registry }}:default
 
       - name: Final Summary
         run: |
-          if [[ "${{ steps.parse.outputs.is_dev }}" == "true" ]]; then
-            docker pull ghcr.io/italoalmeida0/aweci-dev:default
-          else
-            docker pull ghcr.io/italoalmeida0/aweci:default
-          fi
+          docker pull ${{ needs.prepare.outputs.registry }}:default
 
           echo "## ✅ Build Complete!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Built:** ${{ steps.parse.outputs.service }} v${{ steps.version.outputs.current_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Next Version:** v${{ steps.version.outputs.next_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Type:** ${{ steps.parse.outputs.build_type }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Tag:** ${{ steps.version.outputs.next_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Built:** ${{ needs.prepare.outputs.service }} v${{ needs.prepare.outputs.current_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Next Version:** v${{ needs.prepare.outputs.next_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Type:** ${{ needs.prepare.outputs.build_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** ${{ needs.prepare.outputs.next_tag }}" >> $GITHUB_STEP_SUMMARY
           echo "**Health:** ✅ Validated" >> $GITHUB_STEP_SUMMARY
+          echo "**Build Method:** 🚀 Parallel Architecture Builds" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📦 Registry Status:" >> $GITHUB_STEP_SUMMARY
           echo '```toml' >> $GITHUB_STEP_SUMMARY
-
-          if [[ "${{ steps.parse.outputs.is_dev }}" == "true" ]]; then
-            docker run --rm ghcr.io/italoalmeida0/aweci-dev:default >> $GITHUB_STEP_SUMMARY
-          else
-            docker run --rm ghcr.io/italoalmeida0/aweci:default >> $GITHUB_STEP_SUMMARY
-          fi
-
+          docker run --rm ${{ needs.prepare.outputs.registry }}:default >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
