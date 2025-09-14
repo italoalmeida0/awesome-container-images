@@ -232,10 +232,10 @@ jobs:
 
           PROMPT_JSON=$(echo "$PROMPT" | jq -Rs .)
 
-          echo "🤖 Generating release notes with Gemini 2.5 Flash..."
+          echo "🤖 Generating release notes with Gemini..."
 
           RESPONSE=$(curl -s -X POST \
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d "{
               \"contents\": [{
@@ -244,11 +244,17 @@ jobs:
                 }]
               }],
               \"generationConfig\": {
-                \"temperature\": 0.8,
-                \"maxOutputTokens\": 800,
-                \"topP\": 0.95
+                \"temperature\": 0.7,
+                \"maxOutputTokens\": 2000,
+                \"topP\": 0.95,
+                \"topK\": 40
               }
             }")
+
+          ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty' 2>/dev/null)
+          if [[ -n "$ERROR" ]]; then
+            echo "❌ Gemini API Error: $ERROR"
+          fi
 
           RELEASE_NOTES=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "Error generating release notes"')
 
