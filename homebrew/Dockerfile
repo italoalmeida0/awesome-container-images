@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     file \
     sudo \
+    git \
     ca-certificates \
     apt-transport-https \
     locales \
