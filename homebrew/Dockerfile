@@ -1,4 +1,4 @@
-FROM bitnami/minideb:bookworm
+FROM bitnami/minideb:latest
 
 RUN install_packages \
     build-essential \
@@ -34,6 +34,21 @@ RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.co
     find /home/linuxbrew/.linuxbrew -type d -name ".git" -exec rm -rf {} + 2>/dev/null || true
 
 ENV PATH="/home/linuxbrew/.linuxbrew/bin:${PATH}"
+
+# Criar a função brew_install como um script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+/home/linuxbrew/.linuxbrew/bin/brew install "$@" && \
+rm -rf /home/user/.cache/* && \
+rm -rf /home/linuxbrew/.linuxbrew/Homebrew/Cache/* && \
+find /home/linuxbrew/.linuxbrew -name "*.md" -type f -delete 2>/dev/null || true && \
+find /home/linuxbrew/.linuxbrew -type d -name "docs" -exec rm -rf {} + 2>/dev/null || true && \
+find /home/linuxbrew/.linuxbrew -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \
+/home/linuxbrew/.linuxbrew/bin/brew cleanup' \
+> /home/linuxbrew/brew_install && \
+chmod +x /home/linuxbrew/brew_install
+
+ENV PATH="/home/linuxbrew:${PATH}"
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=1s --retries=5 \
   CMD /bin/bash -c "echo 'healthy'" || exit 0
