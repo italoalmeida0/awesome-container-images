@@ -7,7 +7,11 @@ RUN apt-get update && apt-get install -y \
     file \
     sudo \
     ca-certificates \
+    apt-transport-https \
+    locales \
     && rm -rf /var/lib/apt/lists/*
+
+RUN localedef -i en_US -f UTF-8 en_US.UTF-8
 
 RUN groupadd -g 1000 user && \
     useradd -m -u 1000 -g user -s /bin/bash user && \
