@@ -22,7 +22,17 @@ RUN mkdir -p /home/linuxbrew && \
 USER user
 WORKDIR /home/user
 
-RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" && \
+    /home/linuxbrew/.linuxbrew/bin/brew cleanup --prune=all && \
+    rm -rf /home/user/.cache/* && \
+    find /home/linuxbrew/.linuxbrew -name "*.md" -type f -delete && \
+    find /home/linuxbrew/.linuxbrew -name "*.txt" -type f -delete && \
+    find /home/linuxbrew/.linuxbrew -name "*.rst" -type f -delete && \
+    find /home/linuxbrew/.linuxbrew -name "LICENSE*" -type f -delete && \
+    find /home/linuxbrew/.linuxbrew -name "README*" -type f -delete && \
+    find /home/linuxbrew/.linuxbrew -type d -name "docs" -exec rm -rf {} + 2>/dev/null || true && \
+    find /home/linuxbrew/.linuxbrew -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \
+    find /home/linuxbrew/.linuxbrew -type d -name ".git" -exec rm -rf {} + 2>/dev/null || true
 
 ENV PATH="/home/linuxbrew/.linuxbrew/bin:${PATH}"
 
