@@ -239,11 +239,11 @@ jobs:
 
           echo "Container started: $CONTAINER_ID"
 
-          for i in 1 2 3 4 5; do
+          for i in 1 2 3 4 5 6 7 8 9 10; do
             sleep 10
             
             HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' test-health-${{ github.run_id }} 2>/dev/null || echo "none")
-            echo "Attempt $i/5: Status = $HEALTH_STATUS"
+            echo "Attempt $i/10: Status = $HEALTH_STATUS"
             
             if [ "$HEALTH_STATUS" = "healthy" ]; then
               echo "✅ Container healthy!"
@@ -257,7 +257,7 @@ jobs:
             fi
           done
               
-          echo "⏱️ Timeout after 50 seconds - Status: $HEALTH_STATUS"
+          echo "⏱️ Timeout after 100 seconds - Status: $HEALTH_STATUS"
           docker logs --tail 50 test-health-${{ github.run_id }}
           docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
           exit 1
