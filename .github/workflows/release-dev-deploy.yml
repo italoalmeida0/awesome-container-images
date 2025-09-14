@@ -206,36 +206,36 @@ jobs:
             
             def find_docker_version(service, tag, registry_suffix=""):
               if not tag:
-                  return "none"
+                return "none"
               
               suffixes_to_remove = ["-next-dev", "-next"]
-                tag_version = tag.replace(f"{service}-", "")
-                
-                for suffix in suffixes_to_remove:
-                    if suffix in tag_version:
-                        tag_version = tag_version.replace(suffix, "")
-                        break
-                
-                try:
-                    parts = tag_version.split('.')
-                    major, minor, patch = parts[0], parts[1], int(parts[2])
-                except (IndexError, ValueError):
-                    return "none"
-                
-                for i in range(patch, -1, -1):
-                    check_version = f"{major}.{minor}.{i}"
-                    registry = f"ghcr.io/italoalmeida0/aweci{registry_suffix}"
-                    
-                    result = subprocess.run(
-                        f'docker manifest inspect {registry}:{service}-{check_version} 2>/dev/null',
-                        shell=True, 
-                        capture_output=True
-                    )
-                    
-                    if result.returncode == 0:
-                        return check_version
-                
+              tag_version = tag.replace(f"{service}-", "")
+              
+              for suffix in suffixes_to_remove:
+                if suffix in tag_version:
+                  tag_version = tag_version.replace(suffix, "")
+                  break
+            
+              try:
+                parts = tag_version.split('.')
+                major, minor, patch = parts[0], parts[1], int(parts[2])
+              except (IndexError, ValueError):
                 return "none"
+              
+              for i in range(patch, -1, -1):
+                check_version = f"{major}.{minor}.{i}"
+                registry = f"ghcr.io/italoalmeida0/aweci{registry_suffix}"
+                  
+                result = subprocess.run(
+                  f'docker manifest inspect {registry}:{service}-{check_version} 2>/dev/null',
+                  shell=True, 
+                  capture_output=True
+                )
+                
+                if result.returncode == 0:
+                  return check_version
+              
+              return "none"
 
             prod_version = find_docker_version(service, prod_tag, registry_suffix="")
             dev_version = find_docker_version(service, dev_tag, registry_suffix="-dev")
