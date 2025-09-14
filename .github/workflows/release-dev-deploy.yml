@@ -249,18 +249,18 @@ jobs:
           print("Generated TOML:")
           print(toml_content)
 
-          escaped_toml = toml_content.replace('\n', '\\n')
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f"toml={escaped_toml}\n")
+          with open('registry-info.toml', 'w') as f:
+            f.write(toml_content)
+
+          print("TOML saved to registry-info.toml")
           EOF
 
       - name: Create default Dockerfile
         run: |
           cat << 'EOF' > Dockerfile.default
           FROM busybox:latest
-          ARG BUILD_INFO
-          ENV INFO=$BUILD_INFO
-          CMD echo "$INFO"
+          COPY registry-info.toml /info.toml
+          CMD cat /info.toml
           EOF
 
       - name: Update PROD latest
@@ -271,8 +271,6 @@ jobs:
           file: ./Dockerfile.default
           push: true
           platforms: linux/amd64,linux/arm64
-          build-args: |
-            BUILD_INFO=${{ steps.discover.outputs.json }}
           tags: |
             ghcr.io/italoalmeida0/aweci:latest
             ghcr.io/italoalmeida0/aweci:default
@@ -285,8 +283,6 @@ jobs:
           file: ./Dockerfile.default
           push: true
           platforms: linux/amd64
-          build-args: |
-            BUILD_INFO=${{ steps.discover.outputs.json }}
           tags: |
             ghcr.io/italoalmeida0/aweci-dev:latest
             ghcr.io/italoalmeida0/aweci-dev:default
@@ -294,9 +290,9 @@ jobs:
       - name: Final Summary
         run: |
           if [[ "${{ steps.parse.outputs.is_dev }}" == "true" ]]; then
-            docker run --rm ghcr.io/italoalmeida0/aweci-dev:default
+            docker pull ghcr.io/italoalmeida0/aweci-dev:default
           else
-            docker run --rm ghcr.io/italoalmeida0/aweci:default
+            docker pull ghcr.io/italoalmeida0/aweci:default
           fi
 
           echo "## ✅ Build Complete!" >> $GITHUB_STEP_SUMMARY
