@@ -152,17 +152,18 @@ jobs:
 
       - name: Build and push architecture-specific image
         id: build_with_cache
-        uses: docker/build-push-action@v5
         continue-on-error: true
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: ./${{ needs.prepare.outputs.service }}/Dockerfile
           push: true
           platforms: ${{ matrix.platform }}
-          cache-from: type=gha,scope=${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          cache-from: type=registry,ref=${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ matrix.arch }}
+          cache-to: type=inline
           tags: |
             ${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ needs.prepare.outputs.current_version }}-${{ matrix.arch }}
+            ${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ matrix.arch }}
           provenance: false
 
       - name: Build without cache (fallback)
@@ -176,6 +177,7 @@ jobs:
           no-cache: true
           tags: |
             ${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ needs.prepare.outputs.current_version }}-${{ matrix.arch }}
+            ${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ matrix.arch }}
           provenance: false
 
   # ============================================
