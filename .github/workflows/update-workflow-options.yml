@@ -22,97 +22,74 @@ jobs:
 
       - name: Discover services and update workflow
         run: |
-          WORKFLOW_FILE=".github/workflows/release-dev-deploy.yml"
+          python3 << 'EOF'
+          import os
+          import yaml
+          import subprocess
+          from datetime import datetime
 
-          echo "🔍 Discovering all services..."
+          workflow_file = ".github/workflows/release-dev-deploy.yml"
 
-          SERVICES=""
-          for dir in */; do
-            dir=${dir%/}
-            
-            if [[ "$dir" == .* ]] || [[ "$dir" == _* ]]; then
-              continue
-            fi
-            
-            if [[ -f "$dir/Dockerfile" ]]; then
-              SERVICES="$SERVICES $dir"
-              echo "Found: $dir"
-            fi
-          done
+          print("🔍 Discovering all services...")
 
-          SERVICES=$(echo $SERVICES | tr ' ' '\n' | sort | tr '\n' ' ')
-          echo "Services found: $SERVICES"
+          services = []
+          for item in sorted(os.listdir('.')):
+              if os.path.isdir(item) and not item.startswith('.') and not item.startswith('_'):
+                  if os.path.exists(f'{item}/Dockerfile'):
+                      services.append(item)
+                      print(f"Found: {item}")
 
-          NEW_OPTIONS="        options:\n          - default"
-          for SERVICE in $SERVICES; do
-            NEW_OPTIONS="${NEW_OPTIONS}\n          - ${SERVICE}\n          - ${SERVICE}-dev"
-          done
+          print(f"Services found: {', '.join(services)}")
 
-          echo -e "Generated options:\n$NEW_OPTIONS"
+          with open(workflow_file, 'r') as f:
+              workflow = yaml.safe_load(f)
 
-          cp "$WORKFLOW_FILE" "${WORKFLOW_FILE}.bak"
+          new_options = ['default']
+          for service in services:
+              new_options.append(service)
+              new_options.append(f"{service}-dev")
 
-          awk -v new_opts="$NEW_OPTIONS" '
-            BEGIN { in_options = 0 }
-            
-            /^[ ]*options:[ ]*$/ {
-              match($0, /^[ ]*/)
-              indent = substr($0, RSTART, RLENGTH)
-              in_options = 1
-              next
-            }
-            
-            in_options && /^[ ]*-/ {
-              next
-            }
-            
-            in_options && !/^[ ]*-/ {
-              printf "%s", new_opts "\n"
-              in_options = 0
-              print
-              next
-            }
-            
-            { print }
-            
-            END {
-              if (in_options) {
-                printf "%s", new_opts "\n"
-              }
-            }
-          ' "${WORKFLOW_FILE}.bak" > "$WORKFLOW_FILE.tmp"
+          old_options = workflow['on']['workflow_dispatch']['inputs']['service']['options']
+          workflow['on']['workflow_dispatch']['inputs']['service']['options'] = new_options
 
-          mv "$WORKFLOW_FILE.tmp" "$WORKFLOW_FILE"
-
-          if git diff --quiet "$WORKFLOW_FILE"; then
-            echo "✅ No changes needed - workflow is up to date!"
-          else
-            echo "📝 Changes detected! Updating workflow..."
-            
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            
-            git add "$WORKFLOW_FILE"
-            git commit -m "🤖 Auto-update workflow options - found services: $SERVICES"
-
-            BRANCH="auto-update-workflow-$(date +%s)"
-            git checkout -b "$BRANCH"
-            git push origin "$BRANCH"
-            
-            gh pr create \
-              --title "🤖 Auto-update workflow options" \
-              --body "Found services: $SERVICES
+          if old_options == new_options:
+              print("✅ No changes needed - workflow is up to date!")
+          else:
+              print("📝 Changes detected! Updating workflow...")
+              
+              with open(workflow_file, 'w') as f:
+                  yaml.dump(workflow, f, default_flow_style=False, sort_keys=False, width=120)
+              
+              subprocess.run(['git', 'config', 'user.name', 'github-actions[bot]'])
+              subprocess.run(['git', 'config', 'user.email', 'github-actions[bot]@users.noreply.github.com'])
+              subprocess.run(['git', 'add', workflow_file])
+              subprocess.run(['git', 'commit', '-m', f'🤖 Auto-update workflow options - found services: {", ".join(services)}'])
+              
+              branch = f"auto-update-workflow-{int(datetime.now().timestamp())}"
+              subprocess.run(['git', 'checkout', '-b', branch])
+              subprocess.run(['git', 'push', 'origin', branch])
+              
+              pr_body = f"""Found services: {', '.join(services)}
               
               This PR was automatically generated to update the workflow options.
               
-              ### Changes:
               - Updated service options in release-dev-deploy.yml
-              - Added entries for: $SERVICES
+              - Services configured: {', '.join(services)}
               
-              Please review and merge." \
-              --base main \
-              --head "$BRANCH" || echo "PR creation failed - push was successful though"
-          fi
+              Please review and merge."""
+              
+              result = subprocess.run([
+                  'gh', 'pr', 'create',
+                  '--title', '🤖 Auto-update workflow options',
+                  '--body', pr_body,
+                  '--base', 'main',
+                  '--head', branch
+              ], capture_output=True, text=True)
+              
+              if result.returncode != 0:
+                  print("PR creation failed - push was successful though")
+                  print(result.stderr)
+          EOF
         env:
           GH_TOKEN: ${{ secrets.WORKFLOW_UPDATE_TOKEN }}
 

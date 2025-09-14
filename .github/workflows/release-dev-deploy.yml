@@ -187,16 +187,8 @@ jobs:
                   if os.path.exists(f'{item}/Dockerfile'):
                       services.append(item)
 
-          toml_content = f"""# Registry Status | 🪸 AWECI - Awesome Container Images 🐋
-          # Generated at {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")}
-
-          [metadata]
-          timestamp = "{datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}"
-          total_services = {len(services)}
-
-          [services]
-          available = {services}
-          """
+          production_versions = {}
+          development_versions = {}
 
           for service in services:
             prod_tag = subprocess.run(f'git tag -l "{service}-*-next" | grep -v "\-dev" | sort -V | tail -n 1', 
@@ -239,12 +231,29 @@ jobs:
 
             prod_version = find_docker_version(service, prod_tag, registry_suffix="")
             dev_version = find_docker_version(service, dev_tag, registry_suffix="-dev")
-                    
-            toml_content += f"""
-          [versions.{service}]
-          production = "{prod_version}"
-          development = "{dev_version}"
-          """
+            
+            production_versions[service] = prod_version
+            development_versions[service] = dev_version
+
+          toml_content = f"""# Latest Versions | 🪸 AWECI - Awesome Container Images 🐋
+          #Generated at {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")}
+
+          [metadata]
+          timestamp = "{datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}"
+          total_services = {len(services)}
+
+          [services]
+          available = {services}
+
+          [versions.production]"""
+
+          for service in sorted(services):
+            toml_content += f'\n{service} = "{production_versions[service]}"'
+
+          toml_content += "\n\n[versions.development]"
+
+          for service in sorted(services):
+            toml_content += f'\n{service} = "{development_versions[service]}"'
 
           print("Generated TOML:")
           print(toml_content)
@@ -252,7 +261,7 @@ jobs:
           with open('registry-info.toml', 'w') as f:
             f.write(toml_content)
 
-          print("TOML saved to registry-info.toml")
+          print("\nTOML saved to registry-info.toml")
           EOF
 
       - name: Create default Dockerfile
