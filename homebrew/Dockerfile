@@ -35,7 +35,6 @@ RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.co
 
 ENV PATH="/home/linuxbrew/.linuxbrew/bin:${PATH}"
 
-# Criar a função brew_install como um script
 RUN echo '#!/bin/bash\n\
 set -e\n\
 /home/linuxbrew/.linuxbrew/bin/brew install "$@" && \

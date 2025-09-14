@@ -1,4 +1,4 @@
-FROM ghcr.io/italoalmeida0/aweci:homebrew AS builder
+FROM ghcr.io/italoalmeida0/aweci-dev:homebrew AS builder
 RUN echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.bashrc_immutable
 
 USER user
