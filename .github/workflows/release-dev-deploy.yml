@@ -72,14 +72,18 @@ jobs:
         id: version
         run: |
           SERVICE="${{ steps.parse.outputs.service }}"
+          TAG_SUFFIX="${{ steps.parse.outputs.tag_suffix }}"
 
-          LATEST_TAG=$(git tag -l "${SERVICE}-*" --sort=-version:refname | head -n 1)
+          LATEST_TAG=$(git tag -l "${SERVICE}-*${TAG_SUFFIX}" --sort=-version:refname | head -n 1)
 
           if [[ -z "$LATEST_TAG" ]]; then
             CURRENT_VERSION="0.0.0"
             NEXT_VERSION="0.0.1"
+            PREVIOUS_TAG=""
           else
             CURRENT_VERSION=$(echo $LATEST_TAG | sed "s/${SERVICE}-//" | sed 's/-next.*//' | sed 's/-dev.*//')
+            
+            PREVIOUS_TAG=$(git tag -l "${SERVICE}-*${TAG_SUFFIX}" --sort=-version:refname | head -n 2 | tail -n 1)
             
             IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
             MAJOR=${VERSION_PARTS[0]:-0}
@@ -89,16 +93,18 @@ jobs:
             NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
           fi
 
-          CURRENT_TAG="${SERVICE}-${CURRENT_VERSION}${{ steps.parse.outputs.tag_suffix }}"
-          NEXT_TAG="${SERVICE}-${NEXT_VERSION}${{ steps.parse.outputs.tag_suffix }}"
+          CURRENT_TAG="${SERVICE}-${CURRENT_VERSION}${TAG_SUFFIX}"
+          NEXT_TAG="${SERVICE}-${NEXT_VERSION}${TAG_SUFFIX}"
 
           echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
           echo "next_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
           echo "current_tag=${CURRENT_TAG}" >> $GITHUB_OUTPUT
           echo "next_tag=${NEXT_TAG}" >> $GITHUB_OUTPUT
+          echo "previous_tag=${PREVIOUS_TAG}" >> $GITHUB_OUTPUT
 
           echo "📋 Building version: ${CURRENT_VERSION}"
           echo "🏷️ Next tag will be: ${NEXT_TAG}"
+          echo "📌 Previous tag was: ${PREVIOUS_TAG:-'First Release'}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -172,6 +178,135 @@ jobs:
           git push origin "${{ steps.version.outputs.next_tag }}"
           echo "✅ Next version tag created: ${{ steps.version.outputs.next_tag }}"
 
+      - name: Generate AI Release Notes
+        if: success() && steps.parse.outputs.is_dev == 'false' && steps.docker_build.outcome == 'success' && steps.validate_health.outcome == 'success'
+        id: ai_release
+        run: |
+          SERVICE="${{ steps.parse.outputs.service }}"
+          PREVIOUS_TAG="${{ steps.version.outputs.previous_tag }}"
+          CURRENT_TAG="${{ steps.version.outputs.current_tag }}"
+
+          if [[ -z "$PREVIOUS_TAG" ]]; then
+            echo "📝 First release - using last 30 commits"
+            COMPARE_FROM="HEAD~30"
+            COMPARE_URL="**Initial Release** 🎉"
+          else
+            echo "📝 Comparing from ${PREVIOUS_TAG} to HEAD"
+            COMPARE_FROM="${PREVIOUS_TAG}"
+            COMPARE_URL="[View Full Changelog](https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${CURRENT_TAG})"
+          fi
+
+          COMMITS=$(git log ${COMPARE_FROM}..HEAD --pretty=format:"- %s by %an" -- ${SERVICE}/ | head -30)
+          FILES_CHANGED=$(git diff --stat ${COMPARE_FROM}..HEAD -- ${SERVICE}/ | tail -1)
+          DIFF_SUMMARY=$(git diff ${COMPARE_FROM}..HEAD --shortstat -- ${SERVICE}/)
+
+          read -r -d '' PROMPT << EOM || true
+          You are a release notes generator for Docker container services.
+          Generate professional and exciting release notes for: ${SERVICE} v${{ steps.version.outputs.next_version }}
+
+          Changes summary: ${DIFF_SUMMARY}
+          Files: ${FILES_CHANGED}
+
+          Recent commits:
+          ${COMMITS}
+
+          Instructions:
+          1. Create a catchy 1-2 sentence summary of what's new
+          2. List key highlights organized by category using these emojis:
+             - ✨ New Features
+             - 🐛 Bug Fixes  
+             - ⚡ Performance Improvements
+             - 🔧 Maintenance
+             - 📚 Documentation
+             - 🚨 Breaking Changes (if any)
+          3. Keep it user-friendly, focus on benefits not technical details
+          4. Be enthusiastic but professional
+          5. Maximum 400 words
+          6. Use markdown formatting
+          7. Don't include installation instructions or technical details
+
+          Make developers excited to use this new version!
+          EOM
+
+          PROMPT_JSON=$(echo "$PROMPT" | jq -Rs .)
+
+          echo "🤖 Generating release notes with Gemini 2.5 Flash..."
+
+          RESPONSE=$(curl -s -X POST \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"contents\": [{
+                \"parts\": [{
+                  \"text\": ${PROMPT_JSON}
+                }]
+              }],
+              \"generationConfig\": {
+                \"temperature\": 0.8,
+                \"maxOutputTokens\": 800,
+                \"topP\": 0.95
+              }
+            }")
+
+          RELEASE_NOTES=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "Error generating release notes"')
+
+          if [[ "$RELEASE_NOTES" == "Error generating release notes" ]]; then
+            echo "⚠️ Failed to generate AI release notes, using fallback"
+            RELEASE_NOTES="## ${SERVICE} v${{ steps.version.outputs.next_version }}
+
+            This release includes various improvements and updates to the ${SERVICE} service.
+
+            ### 📋 Changes
+            ${COMMITS}
+
+            For detailed changes, please check the changelog link below."
+          fi
+
+          cat << EOF > release_notes.md
+          ${RELEASE_NOTES}
+
+          ---
+
+          ## 📦 Docker Image
+
+          Pull the latest version:
+          \`\`\`bash
+          docker pull ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}-${{ steps.version.outputs.current_version }}
+          \`\`\`
+
+          Or use the latest tag:
+          \`\`\`bash
+          docker pull ${{ steps.parse.outputs.registry }}:${{ steps.parse.outputs.service }}
+          \`\`\`
+
+          ## ✅ Quality Assurance
+          - Container health validated before release
+          - Multi-platform support: \`linux/amd64\`, \`linux/arm64\`
+          - Build cache optimized for faster deployments
+
+          ## 📊 Changelog
+          ${COMPARE_URL}
+
+          ## 🏷️ Version Info
+          - **Released:** v${{ steps.version.outputs.current_version }}
+          - **Next:** v${{ steps.version.outputs.next_version }}
+          - **Registry:** ${{ steps.parse.outputs.registry }}
+          EOF
+
+          echo "✨ Release notes generated successfully!"
+
+      - name: Create GitHub Release
+        if: success() && steps.parse.outputs.is_dev == 'false' && steps.docker_build.outcome == 'success' && steps.validate_health.outcome == 'success' && steps.ai_release.outcome == 'success'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.current_tag }}
+          name: "${{ steps.parse.outputs.service }} v${{ steps.version.outputs.current_version }}"
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Discover and collect all services
         id: discover
         run: |
@@ -236,7 +371,7 @@ jobs:
             development_versions[service] = dev_version
 
           toml_content = f"""# Latest Versions | 🪸 AWECI - Awesome Container Images 🐋
-          #Generated at {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")}
+          # Generated at {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")}
 
           [metadata]
           timestamp = "{datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}"
@@ -254,6 +389,8 @@ jobs:
 
           for service in sorted(services):
             toml_content += f'\n{service} = "{development_versions[service]}"'
+
+          toml_content += "\n"
 
           print("Generated TOML:")
           print(toml_content)
