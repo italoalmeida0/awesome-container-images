@@ -123,7 +123,6 @@ jobs:
           echo "🏷️ Next tag will be: ${NEXT_TAG}"
           echo "📌 Previous tag was: ${PREVIOUS_TAG:-'First Release'}"
 
-
   build-arch:
     needs: prepare
     if: needs.prepare.outputs.should_build == 'true'
@@ -158,14 +157,12 @@ jobs:
           file: ./${{ needs.prepare.outputs.service }}/Dockerfile
           push: true
           platforms: ${{ matrix.platform }}
-          cache-from: |
-            type=registry,ref=${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-buildcache-${{ matrix.arch }}
-            type=gha,scope=${{ matrix.arch }}
-          cache-to: |
-            type=registry,ref=${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-buildcache-${{ matrix.arch }},mode=max
-            type=gha,mode=max,scope=${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
           tags: |
             ${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ needs.prepare.outputs.current_version }}-${{ matrix.arch }}
+          provenance: false
+          sbom: false
 
   # ============================================
   create-manifest:
@@ -203,7 +200,6 @@ jobs:
           docker manifest push ${REGISTRY}:${SERVICE}
 
           echo "✅ Multi-arch manifest created and pushed"
-
 
   validate:
     needs: [prepare, create-manifest]
