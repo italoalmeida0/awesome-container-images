@@ -9,6 +9,8 @@ on:
         type: choice
         options:
           - default
+          - homebrew
+          - homebrew-dev
           - jupyterlab
           - jupyterlab-dev
           - vscode
