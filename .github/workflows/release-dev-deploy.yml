@@ -176,99 +176,83 @@ jobs:
         id: discover
         run: |
           echo "🔍 Discovering all services dynamically..."
+          python3 << 'EOF'
+          import os
+          import subprocess
+          from datetime import datetime
 
-          ALL_SERVICES=""
-          for dir in */; do
-            dir=${dir%/}
+          services = []
+          for item in os.listdir('.'):
+              if os.path.isdir(item) and not item.startswith('.') and not item.startswith('_'):
+                  if os.path.exists(f'{item}/Dockerfile'):
+                      services.append(item)
+
+          toml_content = f"""# Registry Status | 🪸 AWECI - Awesome Container Images 🐋
+          # Generated at {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")}
+
+          [metadata]
+          timestamp = "{datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}"
+          total_services = {len(services)}
+
+          [services]
+          available = {services}
+          """
+
+          for service in services:
+            prod_tag = subprocess.run(f'git tag -l "{service}-*-next" | grep -v "\-dev" | sort -V | tail -n 1', 
+                                    shell=True, capture_output=True, text=True).stdout.strip()
+            dev_tag = subprocess.run(f'git tag -l "{service}-*-next-dev" | sort -V | tail -n 1', 
+                                    shell=True, capture_output=True, text=True).stdout.strip()
             
-            if [[ "$dir" == .* ]] || [[ "$dir" == _* ]]; then
-              continue
-            fi
-            
-            if [[ -f "$dir/Dockerfile" ]]; then
-              ALL_SERVICES="$ALL_SERVICES $dir"
-              echo "Found service: $dir"
-            fi
-          done
-
-          JSON='{"timestamp":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'",'
-          JSON+='"available_services":['
-
-          FIRST=true
-          for SERVICE in $ALL_SERVICES; do
-            if [[ "$FIRST" != "true" ]]; then
-              JSON+=","
-            fi
-            FIRST=false
-            JSON+='"'$SERVICE'","'$SERVICE'-dev"'
-          done
-          JSON+='],'
-
-          JSON+='"versions":{'
-
-          FIRST=true
-          for SERVICE in $ALL_SERVICES; do
-            if [[ "$FIRST" != "true" ]]; then
-              JSON+=","
-            fi
-            FIRST=false
-            
-            PROD_TAG=$(git tag -l "${SERVICE}-*-next" | grep -v "\-dev" | sort -V | tail -n 1)
-            if [[ -n "$PROD_TAG" ]]; then
-              TAG_VERSION=$(echo $PROD_TAG | sed "s/${SERVICE}-//" | sed 's/-next//')
+            def find_docker_version(service, tag, registry_suffix=""):
+              if not tag:
+                  return "none"
               
-              IFS='.' read -ra VER_PARTS <<< "$TAG_VERSION"
-              MAJOR=${VER_PARTS[0]:-0}
-              MINOR=${VER_PARTS[1]:-0}
-              PATCH=${VER_PARTS[2]:-0}
-              
-              FOUND_VERSION="none"
-              for i in $(seq $PATCH -1 0); do
-                CHECK_VERSION="${MAJOR}.${MINOR}.${i}"
-                IMAGE_URL="ghcr.io/italoalmeida0/aweci:${SERVICE}-${CHECK_VERSION}"
+              suffixes_to_remove = ["-next-dev", "-next"]
+                tag_version = tag.replace(f"{service}-", "")
                 
-                if docker manifest inspect $IMAGE_URL >/dev/null 2>&1; then
-                  FOUND_VERSION="$CHECK_VERSION"
-                  break
-                fi
-              done
-              PROD_VERSION="$FOUND_VERSION"
-            else
-              PROD_VERSION="none"
-            fi
-            
-            DEV_TAG=$(git tag -l "${SERVICE}-*-next-dev" | sort -V | tail -n 1)
-            if [[ -n "$DEV_TAG" ]]; then
-              TAG_VERSION=$(echo $DEV_TAG | sed "s/${SERVICE}-//" | sed 's/-next-dev//')
-              
-              IFS='.' read -ra VER_PARTS <<< "$TAG_VERSION"
-              MAJOR=${VER_PARTS[0]:-0}
-              MINOR=${VER_PARTS[1]:-0}
-              PATCH=${VER_PARTS[2]:-0}
-              
-              FOUND_VERSION="none"
-              for i in $(seq $PATCH -1 0); do
-                CHECK_VERSION="${MAJOR}.${MINOR}.${i}"
-                IMAGE_URL="ghcr.io/italoalmeida0/aweci-dev:${SERVICE}-${CHECK_VERSION}"
+                for suffix in suffixes_to_remove:
+                    if suffix in tag_version:
+                        tag_version = tag_version.replace(suffix, "")
+                        break
                 
-                if docker manifest inspect $IMAGE_URL >/dev/null 2>&1; then
-                  FOUND_VERSION="$CHECK_VERSION"
-                  break
-                fi
-              done
-              DEV_VERSION="$FOUND_VERSION"
-            else
-              DEV_VERSION="none"
-            fi
-            
-            JSON+='"'$SERVICE'":{"prod":"'$PROD_VERSION'","dev":"'$DEV_VERSION'"}'
-          done
+                try:
+                    parts = tag_version.split('.')
+                    major, minor, patch = parts[0], parts[1], int(parts[2])
+                except (IndexError, ValueError):
+                    return "none"
+                
+                for i in range(patch, -1, -1):
+                    check_version = f"{major}.{minor}.{i}"
+                    registry = f"ghcr.io/italoalmeida0/aweci{registry_suffix}"
+                    
+                    result = subprocess.run(
+                        f'docker manifest inspect {registry}:{service}-{check_version} 2>/dev/null',
+                        shell=True, 
+                        capture_output=True
+                    )
+                    
+                    if result.returncode == 0:
+                        return check_version
+                
+                return "none"
 
-          JSON+='}}'
+            prod_version = find_docker_version(service, prod_tag, registry_suffix="")
+            dev_version = find_docker_version(service, dev_tag, registry_suffix="-dev")
+                    
+            toml_content += f"""
+          [versions.{service}]
+          production = "{prod_version}"
+          development = "{dev_version}"
+          """
 
-          echo "Discovered services: $ALL_SERVICES"
-          echo "$JSON"
-          echo "json=$JSON" >> $GITHUB_OUTPUT
+          print("Generated TOML:")
+          print(toml_content)
+
+          escaped_toml = toml_content.replace('\n', '\\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"toml={escaped_toml}\n")
+          EOF
 
       - name: Create default Dockerfile
         run: |
@@ -307,7 +291,7 @@ jobs:
             ghcr.io/italoalmeida0/aweci-dev:latest
             ghcr.io/italoalmeida0/aweci-dev:default
 
-      - name: Final Summary with Live Info
+      - name: Final Summary
         run: |
           echo "## ✅ Build Complete!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -318,10 +302,12 @@ jobs:
           echo "**Health:** ✅ Validated" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📦 Registry Status:" >> $GITHUB_STEP_SUMMARY
-          echo '```json' >> $GITHUB_STEP_SUMMARY
+          echo '```toml' >> $GITHUB_STEP_SUMMARY
+
           if [[ "${{ steps.parse.outputs.is_dev }}" == "true" ]]; then
-            docker run --rm ghcr.io/italoalmeida0/aweci-dev:default | jq '.' >> $GITHUB_STEP_SUMMARY
+            docker run --rm ghcr.io/italoalmeida0/aweci-dev:default >> $GITHUB_STEP_SUMMARY
           else
-            docker run --rm ghcr.io/italoalmeida0/aweci:default | jq '.' >> $GITHUB_STEP_SUMMARY
+            docker run --rm ghcr.io/italoalmeida0/aweci:default >> $GITHUB_STEP_SUMMARY
           fi
+
           echo '```' >> $GITHUB_STEP_SUMMARY
