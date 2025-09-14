@@ -10,8 +10,3 @@ services:
       - "./data:/home/user"
     restart: always
     user: "1000:1000"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/lab"]
-      interval: 30s
-      timeout: 10s
-      retries: 3

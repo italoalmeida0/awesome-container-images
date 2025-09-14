@@ -13,14 +13,3 @@ services:
       - "/var/run/docker.sock:/var/run/docker.sock"
     restart: always
     user: "1000:1000"
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "sh",
-          "-c",
-          "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ | grep -E '^(200|401|403)$'",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
