@@ -23,7 +23,6 @@ USER user
 WORKDIR /home/user
 
 RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" && \
-    /home/linuxbrew/.linuxbrew/bin/brew cleanup --prune=all && \
     rm -rf /home/user/.cache/* && \
     find /home/linuxbrew/.linuxbrew -name "*.md" -type f -delete && \
     find /home/linuxbrew/.linuxbrew -name "*.txt" -type f -delete && \

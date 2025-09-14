@@ -1,44 +1,158 @@
-name: Test Gemini API
+name: Debug Release Notes Generator
 
 on:
   workflow_dispatch:
     inputs:
-      prompt:
-        description: "Prompt to send to Gemini"
+      service:
+        description: "Service name"
         required: true
-        default: "Write a haiku about GitHub Actions"
+        default: "api-service"
         type: string
+      version:
+        description: "Version number"
+        required: true
+        default: "1.2.3"
+        type: string
+      simulate_commits:
+        description: "Simulate commits (true/false)"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
 
 jobs:
-  test-gemini:
+  debug-release-notes:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Setup environment
-        run: |
-          echo "Starting Gemini API test..."
-          echo "Prompt: ${{ github.event.inputs.prompt }}"
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Get full history for git log
 
-      - name: Call Gemini API
-        id: gemini
+      - name: Setup test data
+        id: setup
         run: |
-          # Prepare the prompt with proper JSON escaping
-          PROMPT="${{ github.event.inputs.prompt }}"
+          SERVICE="${{ github.event.inputs.service }}"
+          VERSION="${{ github.event.inputs.version }}"
+
+          echo "📦 Service: $SERVICE"
+          echo "🏷️ Version: $VERSION"
+
+          # Simulate or get real commits
+          if [[ "${{ github.event.inputs.simulate_commits }}" == "true" ]]; then
+            echo "🎭 Using simulated commits..."
+            COMMITS="- feat: Add new authentication system by John Doe
+          - fix: Resolve database connection timeout by Jane Smith
+          - perf: Optimize query performance by Bob Johnson
+          - docs: Update API documentation by Alice Brown
+          - refactor: Clean up legacy code by Charlie Wilson"
+            
+            DIFF_SUMMARY="5 files changed, 125 insertions(+), 45 deletions(-)"
+            FILES_CHANGED="5 files changed, 125 insertions(+), 45 deletions(-)"
+          else
+            echo "📚 Using real commits from repository..."
+            # Get last 10 commits for the service directory (or whole repo if service doesn't exist)
+            if [[ -d "$SERVICE" ]]; then
+              COMMITS=$(git log HEAD~10..HEAD --pretty=format:"- %s by %an" -- ${SERVICE}/ | head -10)
+            else
+              echo "⚠️ Service directory '$SERVICE' not found, using root commits"
+              COMMITS=$(git log HEAD~10..HEAD --pretty=format:"- %s by %an" | head -10)
+            fi
+            
+            if [[ -z "$COMMITS" ]]; then
+              echo "No commits found, using fallback"
+              COMMITS="- Initial commit by GitHub Actions"
+            fi
+            
+            # Get real diff stats
+            if [[ -d "$SERVICE" ]]; then
+              DIFF_SUMMARY=$(git diff HEAD~10..HEAD --shortstat -- ${SERVICE}/ || echo "No changes detected")
+              FILES_CHANGED=$(git diff --stat HEAD~10..HEAD -- ${SERVICE}/ | tail -1 || echo "No files changed")
+            else
+              DIFF_SUMMARY=$(git diff HEAD~10..HEAD --shortstat || echo "No changes detected")
+              FILES_CHANGED=$(git diff --stat HEAD~10..HEAD | tail -1 || echo "No files changed")
+            fi
+          fi
+
+          echo "commits<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "diff_summary=$DIFF_SUMMARY" >> $GITHUB_OUTPUT
+          echo "files_changed=$FILES_CHANGED" >> $GITHUB_OUTPUT
+
+      - name: Debug - Show collected data
+        run: |
+          echo "🔍 Debug Information:"
+          echo "===================="
+          echo ""
+          echo "📊 Diff Summary:"
+          echo "${{ steps.setup.outputs.diff_summary }}"
+          echo ""
+          echo "📁 Files Changed:"
+          echo "${{ steps.setup.outputs.files_changed }}"
+          echo ""
+          echo "📝 Commits:"
+          echo "${{ steps.setup.outputs.commits }}"
+          echo "===================="
+
+      - name: Generate AI Release Notes
+        id: ai_release
+        run: |
+          SERVICE="${{ github.event.inputs.service }}"
+          VERSION="${{ github.event.inputs.version }}"
+          COMMITS="${{ steps.setup.outputs.commits }}"
+          DIFF_SUMMARY="${{ steps.setup.outputs.diff_summary }}"
+          FILES_CHANGED="${{ steps.setup.outputs.files_changed }}"
+
+          # Create the prompt
+          PROMPT="You are a release notes generator for Docker container services.
+          Generate professional and exciting release notes for: ${SERVICE} v${VERSION}
+
+          Changes summary: ${DIFF_SUMMARY}
+          Files: ${FILES_CHANGED}
+
+          Recent commits:
+          ${COMMITS}
+
+          Instructions:
+          1. Create a catchy 1-2 sentence summary of what's new
+          2. List key highlights organized by category using these emojis:
+             - ✨ New Features
+             - 🐛 Bug Fixes  
+             - ⚡ Performance Improvements
+             - 🔧 Maintenance
+             - 📚 Documentation
+             - 🚨 Breaking Changes (if any)
+          3. Keep it user-friendly, focus on benefits not technical details
+          4. Be enthusiastic but professional
+          5. Maximum 400 words
+          6. Use markdown formatting
+          7. Don't include installation instructions or technical details
+
+          Make developers excited to use this new version!"
+
+          # Escape the prompt for JSON
           PROMPT_JSON=$(echo "$PROMPT" | jq -Rs .)
 
-          echo "📝 Original prompt: $PROMPT"
-          echo "🔧 JSON-escaped prompt: $PROMPT_JSON"
+          # Debug: Show prompt info
+          echo "📝 Prompt length: $(echo "$PROMPT" | wc -c) characters"
+          echo "🔧 JSON-escaped prompt (first 300 chars):"
+          echo "${PROMPT_JSON:0:300}..."
 
-          # Make the API call
           echo "🤖 Calling Gemini 2.5 Flash API..."
 
-          RESPONSE=$(curl -s -X POST \
+          # Make the API call with detailed error handling
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d "{
               \"contents\": [{
                 \"parts\": [{
-                  \"text\": $PROMPT_JSON
+                  \"text\": ${PROMPT_JSON}
                 }]
               }],
               \"generationConfig\": {
@@ -48,90 +162,145 @@ jobs:
               }
             }")
 
-          # Debug: Show full response
-          echo "📥 Full API Response:"
-          echo "$RESPONSE" | jq .
+          # Extract HTTP status
+          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS:" | cut -d: -f2)
+          RESPONSE_BODY=$(echo "$RESPONSE" | sed '/HTTP_STATUS:/d')
 
-          # Check for errors
-          ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty')
-          if [[ -n "$ERROR" ]]; then
-            echo "❌ API Error detected: $ERROR"
-            echo "error=true" >> $GITHUB_OUTPUT
-            echo "error_message=$ERROR" >> $GITHUB_OUTPUT
-            exit 1
+          echo "📡 HTTP Status Code: $HTTP_STATUS"
+
+          # Check HTTP status
+          if [[ "$HTTP_STATUS" != "200" ]]; then
+            echo "❌ API request failed with status code: $HTTP_STATUS"
+            echo "📥 Response body:"
+            echo "$RESPONSE_BODY" | jq . 2>/dev/null || echo "$RESPONSE_BODY"
+            
+            # Use fallback
+            RELEASE_NOTES="## ${SERVICE} v${VERSION}
+
+          This release includes various improvements and updates to the ${SERVICE} service.
+
+          ### 📋 Changes
+          ${COMMITS}
+
+          For detailed changes, please check the repository."
+          else
+            echo "✅ API request successful!"
+            
+            # Debug: Show full response
+            echo "📥 Full API Response:"
+            echo "$RESPONSE_BODY" | jq . 2>/dev/null || echo "$RESPONSE_BODY"
+            
+            # Check for API errors
+            ERROR=$(echo "$RESPONSE_BODY" | jq -r '.error.message // empty' 2>/dev/null)
+            if [[ -n "$ERROR" ]]; then
+              echo "❌ Gemini API Error: $ERROR"
+              
+              # Check specific error types
+              if [[ "$ERROR" == *"API_KEY"* ]]; then
+                echo "🔑 Issue with API key - please check GEMINI_API_KEY secret"
+              elif [[ "$ERROR" == *"quota"* ]]; then
+                echo "📊 Quota exceeded - API limits reached"
+              fi
+              
+              RELEASE_NOTES="Error: $ERROR"
+            else
+              # Extract the generated text
+              RELEASE_NOTES=$(echo "$RESPONSE_BODY" | jq -r '.candidates[0].content.parts[0].text // empty' 2>/dev/null)
+              
+              if [[ -z "$RELEASE_NOTES" ]]; then
+                echo "⚠️ No content generated, checking response structure..."
+                echo "$RESPONSE_BODY" | jq '.candidates[0]' 2>/dev/null
+                RELEASE_NOTES="Failed to extract release notes from response"
+              else
+                echo "✅ Successfully extracted release notes!"
+                
+                # Show token usage
+                PROMPT_TOKENS=$(echo "$RESPONSE_BODY" | jq -r '.usageMetadata.promptTokenCount // 0' 2>/dev/null)
+                RESPONSE_TOKENS=$(echo "$RESPONSE_BODY" | jq -r '.usageMetadata.candidatesTokenCount // 0' 2>/dev/null)
+                TOTAL_TOKENS=$(echo "$RESPONSE_BODY" | jq -r '.usageMetadata.totalTokenCount // 0' 2>/dev/null)
+                
+                echo "📊 Token Usage:"
+                echo "  - Prompt: $PROMPT_TOKENS tokens"
+                echo "  - Response: $RESPONSE_TOKENS tokens"
+                echo "  - Total: $TOTAL_TOKENS tokens"
+              fi
+            fi
           fi
 
-          # Extract the generated text
-          GENERATED_TEXT=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "No text generated"')
-
-          if [[ "$GENERATED_TEXT" == "No text generated" ]]; then
-            echo "⚠️ Warning: No text was generated"
-            echo "error=true" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-
-          echo "✅ Successfully generated response!"
-          echo "📄 Generated text:"
-          echo "------------------------"
-          echo "$GENERATED_TEXT"
-          echo "------------------------"
-
-          # Save to output
-          echo "generated_text<<EOF" >> $GITHUB_OUTPUT
-          echo "$GENERATED_TEXT" >> $GITHUB_OUTPUT
+          # Save release notes
+          echo "release_notes<<EOF" >> $GITHUB_OUTPUT
+          echo "$RELEASE_NOTES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-          echo "error=false" >> $GITHUB_OUTPUT
 
-          # Also save token usage
-          PROMPT_TOKENS=$(echo "$RESPONSE" | jq -r '.usageMetadata.promptTokenCount // 0')
-          RESPONSE_TOKENS=$(echo "$RESPONSE" | jq -r '.usageMetadata.candidatesTokenCount // 0')
-          TOTAL_TOKENS=$(echo "$RESPONSE" | jq -r '.usageMetadata.totalTokenCount // 0')
+          # Create the full release notes file
+          cat << EOF > release_notes.md
+          ${RELEASE_NOTES}
 
-          echo "📊 Token Usage:"
-          echo "  - Prompt tokens: $PROMPT_TOKENS"
-          echo "  - Response tokens: $RESPONSE_TOKENS"
-          echo "  - Total tokens: $TOTAL_TOKENS"
+          ---
 
-          echo "prompt_tokens=$PROMPT_TOKENS" >> $GITHUB_OUTPUT
-          echo "response_tokens=$RESPONSE_TOKENS" >> $GITHUB_OUTPUT
-          echo "total_tokens=$TOTAL_TOKENS" >> $GITHUB_OUTPUT
+          ## 📦 Docker Image
 
-      - name: Display Results
+          Pull the latest version:
+          \`\`\`bash
+          docker pull ghcr.io/your-org/${SERVICE}:${VERSION}
+          \`\`\`
+
+          Or use the latest tag:
+          \`\`\`bash
+          docker pull ghcr.io/your-org/${SERVICE}:latest
+          \`\`\`
+
+          ## ✅ Quality Assurance
+          - Container health validated before release
+          - Multi-platform support: \`linux/amd64\`, \`linux/arm64\`
+          - Build cache optimized for faster deployments
+
+          ## 📊 Changelog
+          [View Full Changelog](https://github.com/${{ github.repository }}/releases)
+
+          ## 🏷️ Version Info
+          - **Released:** v${VERSION}
+          - **Service:** ${SERVICE}
+          - **Registry:** ghcr.io/your-org
+          EOF
+
+          echo "✨ Release notes file created!"
+
+      - name: Display Generated Release Notes
         if: always()
         run: |
-          echo "🎯 Summary:"
-          echo "==========="
-          if [[ "${{ steps.gemini.outputs.error }}" == "true" ]]; then
-            echo "❌ Test failed!"
-            if [[ -n "${{ steps.gemini.outputs.error_message }}" ]]; then
-              echo "Error: ${{ steps.gemini.outputs.error_message }}"
-            fi
+          echo "📄 Generated Release Notes:"
+          echo "============================"
+          if [[ -f release_notes.md ]]; then
+            cat release_notes.md
           else
-            echo "✅ Test passed!"
+            echo "❌ No release notes file generated"
             echo ""
-            echo "Generated Response:"
-            echo "${{ steps.gemini.outputs.generated_text }}"
-            echo ""
-            echo "Token Usage:"
-            echo "- Prompt: ${{ steps.gemini.outputs.prompt_tokens }}"
-            echo "- Response: ${{ steps.gemini.outputs.response_tokens }}"
-            echo "- Total: ${{ steps.gemini.outputs.total_tokens }}"
+            echo "Raw output:"
+            echo "${{ steps.ai_release.outputs.release_notes }}"
           fi
+          echo "============================"
 
-      - name: Test Different Models (Optional)
-        if: success()
+      - name: Upload Release Notes
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-notes
+          path: release_notes.md
+          if-no-files-found: warn
+
+      - name: Test with curl directly (for comparison)
+        if: always()
         run: |
-          echo "🧪 Testing with different model versions..."
+          echo "🧪 Testing with simple curl command for comparison..."
 
-          # Test with Gemini 1.5 Flash
-          echo "Testing gemini-1.5-flash..."
-          RESPONSE_15=$(curl -s -X POST \
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
+          SIMPLE_RESPONSE=$(curl -s -X POST \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d '{
               "contents": [{
                 "parts": [{
-                  "text": "Say hello in 5 words"
+                  "text": "Write a simple test response in 10 words"
                 }]
               }],
               "generationConfig": {
@@ -140,5 +309,5 @@ jobs:
               }
             }')
 
-          TEXT_15=$(echo "$RESPONSE_15" | jq -r '.candidates[0].content.parts[0].text // "Failed"')
-          echo "Gemini 1.5 Flash response: $TEXT_15"
+          echo "Simple test response:"
+          echo "$SIMPLE_RESPONSE" | jq '.candidates[0].content.parts[0].text' 2>/dev/null || echo "Failed to get simple response"
