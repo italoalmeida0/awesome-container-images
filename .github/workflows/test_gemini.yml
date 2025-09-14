@@ -1,145 +1,176 @@
-name: Debug Release Notes Generator
+name: Test Production Release with AI Notes
 
 on:
   workflow_dispatch:
     inputs:
       service:
-        description: "Service name"
+        description: "Service to release"
         required: true
-        default: "jupyterlab"
-        type: string
-      version:
-        description: "Version number"
+        default: "api-gateway"
+        type: choice
+        options:
+          - api-gateway
+          - auth-service
+          - payment-service
+          - notification-service
+      version_bump:
+        description: "Version bump type"
         required: true
-        default: "4.6.7"
-        type: string
-      simulate_commits:
-        description: "Simulate commits (true/false)"
+        default: "patch"
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+      dry_run:
+        description: "Dry run (no actual release)"
         required: true
         default: "true"
         type: choice
         options:
           - "true"
           - "false"
+
+env:
+  REGISTRY: ghcr.io
+
 jobs:
-  debug-release-notes:
+  prepare-release:
     runs-on: ubuntu-latest
+    outputs:
+      current_version: ${{ steps.version.outputs.current }}
+      next_version: ${{ steps.version.outputs.next }}
+      previous_tag: ${{ steps.version.outputs.previous_tag }}
+      release_notes: ${{ steps.ai_notes.outputs.notes }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup test data
-        id: setup
+      - name: Get version information
+        id: version
         run: |
           SERVICE="${{ github.event.inputs.service }}"
-          VERSION="${{ github.event.inputs.version }}"
+          echo "📦 Processing release for: $SERVICE"
 
-          echo "📦 Service: $SERVICE"
-          echo "🏷️ Version: $VERSION"
+          LATEST_TAG=$(git tag -l "${SERVICE}-v*" --sort=-v:refname | head -1)
 
-          if [[ "${{ github.event.inputs.simulate_commits }}" == "true" ]]; then
-            echo "🎭 Using simulated commits..."
-            COMMITS="- feat: Add new authentication system by John Doe
-          - fix: Resolve database connection timeout by Jane Smith
-          - perf: Optimize query performance by Bob Johnson
-          - docs: Update API documentation by Alice Brown
-          - refactor: Clean up legacy code by Charlie Wilson"
-            
-            DIFF_SUMMARY="5 files changed, 125 insertions(+), 45 deletions(-)"
-            FILES_CHANGED="5 files changed, 125 insertions(+), 45 deletions(-)"
+          if [[ -z "$LATEST_TAG" ]]; then
+            echo "🎉 First release for $SERVICE"
+            CURRENT_VERSION="0.0.0"
+            PREVIOUS_TAG=""
           else
-            echo "📚 Using real commits from repository..."
-            if [[ -d "$SERVICE" ]]; then
-              COMMITS=$(git log HEAD~10..HEAD --pretty=format:"- %s by %an" -- ${SERVICE}/ | head -10)
-            else
-              echo "⚠️ Service directory '$SERVICE' not found, using root commits"
-              COMMITS=$(git log HEAD~10..HEAD --pretty=format:"- %s by %an" | head -10)
-            fi
-            
-            if [[ -z "$COMMITS" ]]; then
-              echo "No commits found, using fallback"
-              COMMITS="- Initial commit by GitHub Actions"
-            fi
-            
-            if [[ -d "$SERVICE" ]]; then
-              DIFF_SUMMARY=$(git diff HEAD~10..HEAD --shortstat -- ${SERVICE}/ || echo "No changes detected")
-              FILES_CHANGED=$(git diff --stat HEAD~10..HEAD -- ${SERVICE}/ | tail -1 || echo "No files changed")
-            else
-              DIFF_SUMMARY=$(git diff HEAD~10..HEAD --shortstat || echo "No changes detected")
-              FILES_CHANGED=$(git diff --stat HEAD~10..HEAD | tail -1 || echo "No files changed")
-            fi
+            CURRENT_VERSION=${LATEST_TAG#${SERVICE}-v}
+            PREVIOUS_TAG=$LATEST_TAG
+            echo "📌 Current version: $CURRENT_VERSION"
           fi
+
+          IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+
+          case "${{ github.event.inputs.version_bump }}" in
+            major)
+              NEXT_VERSION="$((major + 1)).0.0"
+              ;;
+            minor)
+              NEXT_VERSION="${major}.$((minor + 1)).0"
+              ;;
+            patch)
+              NEXT_VERSION="${major}.${minor}.$((patch + 1))"
+              ;;
+          esac
+
+          echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "next=$NEXT_VERSION" >> $GITHUB_OUTPUT
+          echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+
+          echo "📈 Version bump: $CURRENT_VERSION → $NEXT_VERSION"
+
+      - name: Collect commit information
+        id: commits
+        run: |
+          SERVICE="${{ github.event.inputs.service }}"
+          PREVIOUS_TAG="${{ steps.version.outputs.previous_tag }}"
+
+          if [[ -z "$PREVIOUS_TAG" ]]; then
+            echo "📝 Collecting all commits for first release..."
+            COMPARE_FROM="$(git rev-list --max-parents=0 HEAD)"
+            COMPARE_RANGE="${COMPARE_FROM}..HEAD"
+          else
+            echo "📝 Collecting commits since $PREVIOUS_TAG..."
+            COMPARE_RANGE="${PREVIOUS_TAG}..HEAD"
+          fi
+
+          if [[ -d "$SERVICE" ]]; then
+            COMMITS=$(git log $COMPARE_RANGE --pretty=format:"- %s by %an" -- ${SERVICE}/ | head -50)
+            FILES_STATS=$(git diff --stat $COMPARE_RANGE -- ${SERVICE}/)
+            DIFF_SUMMARY=$(git diff $COMPARE_RANGE --shortstat -- ${SERVICE}/)
+          else
+            echo "⚠️ Service directory not found, using root commits"
+            COMMITS=$(git log $COMPARE_RANGE --pretty=format:"- %s by %an" | head -50)
+            FILES_STATS=$(git diff --stat $COMPARE_RANGE)
+            DIFF_SUMMARY=$(git diff $COMPARE_RANGE --shortstat)
+          fi
+
+          COMMIT_COUNT=$(echo "$COMMITS" | wc -l)
+
+          if [[ -z "$COMMITS" ]]; then
+            COMMITS="- Release preparation by GitHub Actions"
+            DIFF_SUMMARY="Initial release"
+            FILES_STATS="Initial release"
+          fi
+
+          echo "📊 Found $COMMIT_COUNT commits"
+          echo "📈 Changes: $DIFF_SUMMARY"
 
           echo "commits<<EOF" >> $GITHUB_OUTPUT
           echo "$COMMITS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
           echo "diff_summary=$DIFF_SUMMARY" >> $GITHUB_OUTPUT
-          echo "files_changed=$FILES_CHANGED" >> $GITHUB_OUTPUT
-
-      - name: Debug - Show collected data
-        run: |
-          echo "🔍 Debug Information:"
-          echo "===================="
-          echo ""
-          echo "📊 Diff Summary:"
-          echo "${{ steps.setup.outputs.diff_summary }}"
-          echo ""
-          echo "📁 Files Changed:"
-          echo "${{ steps.setup.outputs.files_changed }}"
-          echo ""
-          echo "📝 Commits:"
-          echo "${{ steps.setup.outputs.commits }}"
-          echo "===================="
+          echo "files_stats<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES_STATS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Generate AI Release Notes
-        id: ai_release
+        id: ai_notes
         run: |
           SERVICE="${{ github.event.inputs.service }}"
-          VERSION="${{ github.event.inputs.version }}"
-          COMMITS="${{ steps.setup.outputs.commits }}"
-          DIFF_SUMMARY="${{ steps.setup.outputs.diff_summary }}"
-          FILES_CHANGED="${{ steps.setup.outputs.files_changed }}"
+          VERSION="${{ steps.version.outputs.next }}"
+          COMMITS="${{ steps.commits.outputs.commits }}"
+          DIFF_SUMMARY="${{ steps.commits.outputs.diff_summary }}"
 
-          PROMPT="You are a release notes generator for Docker container services.
-          Generate professional and exciting release notes for: ${SERVICE} v${VERSION}
+          echo "🤖 Generating AI-powered release notes..."
 
-          Changes summary: ${DIFF_SUMMARY}
-          Files: ${FILES_CHANGED}
+          PROMPT="Generate professional release notes for ${SERVICE} v${VERSION}.
+
+          Changes: ${DIFF_SUMMARY}
 
           Recent commits:
           ${COMMITS}
 
           Instructions:
-          1. Create a catchy 1-2 sentence summary of what's new
-          2. List key highlights organized by category using these emojis:
+          1. Create an exciting 1-2 sentence summary
+          2. List key highlights with emojis:
              - ✨ New Features
-             - 🐛 Bug Fixes  
+             - 🐛 Bug Fixes
              - ⚡ Performance Improvements
              - 🔧 Maintenance
              - 📚 Documentation
              - 🚨 Breaking Changes (if any)
-          3. Keep it user-friendly, focus on benefits not technical details
+          3. Focus on user benefits, not technical details
           4. Be enthusiastic but professional
           5. Maximum 400 words
           6. Use markdown formatting
-          7. Don't include installation instructions or technical details
 
-          Make developers excited to use this new version!"
+          Make developers excited about this release!"
 
           PROMPT_JSON=$(echo "$PROMPT" | jq -Rs .)
 
-          echo "📝 Prompt length: $(echo "$PROMPT" | wc -c) characters"
-          echo "🔧 JSON-escaped prompt (first 300 chars):"
-          echo "${PROMPT_JSON:0:300}..."
-
-          echo "🤖 Calling Gemini 2.5 Flash API..."
-
           RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d "{
               \"contents\": [{
@@ -149,7 +180,7 @@ jobs:
               }],
               \"generationConfig\": {
                 \"temperature\": 0.7,
-                \"maxOutputTokens\": 4096,
+                \"maxOutputTokens\": 2000,
                 \"topP\": 0.95,
                 \"topK\": 40
               }
@@ -158,108 +189,48 @@ jobs:
           HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS:" | cut -d: -f2)
           RESPONSE_BODY=$(echo "$RESPONSE" | sed '/HTTP_STATUS:/d')
 
-          echo "📡 HTTP Status Code: $HTTP_STATUS"
-
           if [[ "$HTTP_STATUS" != "200" ]]; then
-            echo "❌ API request failed with status code: $HTTP_STATUS"
-            echo "📥 Response body:"
-            echo "$RESPONSE_BODY" | jq . 2>/dev/null || echo "$RESPONSE_BODY"
-            
+            echo "⚠️ AI generation failed, using fallback"
             RELEASE_NOTES="## ${SERVICE} v${VERSION}
 
-          This release includes various improvements and updates to the ${SERVICE} service.
+          This release includes various improvements and updates.
 
-          ### 📋 Changes
-          ${COMMITS}
-
-          For detailed changes, please check the repository."
+          ### Changes
+          ${COMMITS}"
           else
-            echo "✅ API request successful!"
+            RELEASE_NOTES=$(echo "$RESPONSE_BODY" | jq -r '.candidates[0].content.parts[0].text // empty' 2>/dev/null)
             
-            echo "📥 Full API Response:"
-            echo "$RESPONSE_BODY" | jq . 2>/dev/null || echo "$RESPONSE_BODY"
-            
-            ERROR=$(echo "$RESPONSE_BODY" | jq -r '.error.message // empty' 2>/dev/null)
-            if [[ -n "$ERROR" ]]; then
-              echo "❌ Gemini API Error: $ERROR"
-              
-              if [[ "$ERROR" == *"API_KEY"* ]]; then
-                echo "🔑 Issue with API key - please check GEMINI_API_KEY secret"
-              elif [[ "$ERROR" == *"quota"* ]]; then
-                echo "📊 Quota exceeded - API limits reached"
-              fi
-              
-              RELEASE_NOTES="Error: $ERROR"
+            if [[ -z "$RELEASE_NOTES" ]]; then
+              echo "⚠️ Empty response, using fallback"
+              RELEASE_NOTES="## ${SERVICE} v${VERSION}
+
+          This release includes various improvements and updates.
+
+          ### Changes
+          ${COMMITS}"
             else
-              RELEASE_NOTES=$(echo "$RESPONSE_BODY" | jq -r '.candidates[0].content.parts[0].text // empty' 2>/dev/null)
-              
-              if [[ -z "$RELEASE_NOTES" ]]; then
-                echo "⚠️ No text in expected location, checking alternative structures..."
-                
-                FINISH_REASON=$(echo "$RESPONSE_BODY" | jq -r '.candidates[0].finishReason // empty' 2>/dev/null)
-                echo "Finish reason: $FINISH_REASON"
-                
-                if [[ "$FINISH_REASON" == "MAX_TOKENS" ]]; then
-                  echo "❌ Model hit token limit without generating visible text"
-                  echo "This might be due to 'thinking' tokens. Trying simpler prompt..."
-                  
-                  SIMPLE_PROMPT="Generate a brief release notes summary for ${SERVICE} v${VERSION} with these commits: ${COMMITS:0:200}. Keep it under 200 words."
-                  SIMPLE_JSON=$(echo "$SIMPLE_PROMPT" | jq -Rs .)
-                  
-                  RETRY_RESPONSE=$(curl -s -X POST \
-                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
-                    -H "Content-Type: application/json" \
-                    -d "{
-                      \"contents\": [{
-                        \"parts\": [{
-                          \"text\": ${SIMPLE_JSON}
-                        }]
-                      }],
-                      \"generationConfig\": {
-                        \"temperature\": 0.5,
-                        \"maxOutputTokens\": 500,
-                        \"topP\": 0.9
-                      }
-                    }")
-                  
-                  RELEASE_NOTES=$(echo "$RETRY_RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty' 2>/dev/null)
-                  
-                  if [[ -n "$RELEASE_NOTES" ]]; then
-                    echo "✅ Retry with simpler prompt succeeded!"
-                  else
-                    echo "❌ Retry also failed"
-                    RELEASE_NOTES="Failed to generate release notes"
-                  fi
-                fi
-                
-                if [[ -z "$RELEASE_NOTES" ]]; then
-                  echo "Checking candidates array structure:"
-                  echo "$RESPONSE_BODY" | jq '.candidates[0]' 2>/dev/null
-                  RELEASE_NOTES="Failed to extract release notes from response"
-                fi
-              else
-                echo "✅ Successfully extracted release notes!"
-                
-                PROMPT_TOKENS=$(echo "$RESPONSE_BODY" | jq -r '.usageMetadata.promptTokenCount // 0' 2>/dev/null)
-                RESPONSE_TOKENS=$(echo "$RESPONSE_BODY" | jq -r '.usageMetadata.candidatesTokenCount // 0' 2>/dev/null)
-                TOTAL_TOKENS=$(echo "$RESPONSE_BODY" | jq -r '.usageMetadata.totalTokenCount // 0' 2>/dev/null)
-                THOUGHTS_TOKENS=$(echo "$RESPONSE_BODY" | jq -r '.usageMetadata.thoughtsTokenCount // 0' 2>/dev/null)
-                
-                echo "📊 Token Usage:"
-                echo "  - Prompt: $PROMPT_TOKENS tokens"
-                echo "  - Response: $RESPONSE_TOKENS tokens"
-                echo "  - Thoughts: $THOUGHTS_TOKENS tokens"
-                echo "  - Total: $TOTAL_TOKENS tokens"
-              fi
+              echo "✅ AI release notes generated successfully!"
             fi
           fi
 
-          echo "release_notes<<EOF" >> $GITHUB_OUTPUT
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
           echo "$RELEASE_NOTES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-          cat << EOF > release_notes.md
-          ${RELEASE_NOTES}
+      - name: Create Release Notes File
+        run: |
+          SERVICE="${{ github.event.inputs.service }}"
+          VERSION="${{ steps.version.outputs.next }}"
+          PREVIOUS_TAG="${{ steps.version.outputs.previous_tag }}"
+
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            COMPARE_URL="[View Full Changelog](https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${SERVICE}-v${VERSION})"
+          else
+            COMPARE_URL="**Initial Release** 🎉"
+          fi
+
+          cat << EOF > RELEASE_NOTES.md
+          ${{ steps.ai_notes.outputs.notes }}
 
           ---
 
@@ -267,72 +238,166 @@ jobs:
 
           Pull the latest version:
           \`\`\`bash
-          docker pull ghcr.io/your-org/${SERVICE}:${VERSION}
+          docker pull ${{ env.REGISTRY }}/${{ github.repository_owner }}/${SERVICE}:v${VERSION}
+          docker pull ${{ env.REGISTRY }}/${{ github.repository_owner }}/${SERVICE}:latest
           \`\`\`
 
-          Or use the latest tag:
-          \`\`\`bash
-          docker pull ghcr.io/your-org/${SERVICE}:latest
-          \`\`\`
+          ## 📊 Release Information
 
-          ## ✅ Quality Assurance
-          - Container health validated before release
-          - Multi-platform support: \`linux/amd64\`, \`linux/arm64\`
-          - Build cache optimized for faster deployments
-
-          ## 📊 Changelog
-          [View Full Changelog](https://github.com/${{ github.repository }}/releases)
-
-          ## 🏷️ Version Info
-          - **Released:** v${VERSION}
+          - **Version:** v${VERSION}
           - **Service:** ${SERVICE}
-          - **Registry:** ghcr.io/your-org
+          - **Release Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          - **Commit:** ${{ github.sha }}
+          - **Build:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          ## 🔗 Links
+
+          - ${COMPARE_URL}
+          - [Docker Registry](${{ env.REGISTRY }}/${{ github.repository_owner }}/${SERVICE})
+          - [Release Assets](https://github.com/${{ github.repository }}/releases/tag/${SERVICE}-v${VERSION})
           EOF
 
-          echo "✨ Release notes file created!"
+          echo "📄 Release notes preview:"
+          echo "================================"
+          cat RELEASE_NOTES.md
+          echo "================================"
 
-      - name: Display Generated Release Notes
-        if: always()
+      - name: Build Docker Image (Simulation)
+        if: github.event.inputs.dry_run == 'true'
         run: |
-          echo "📄 Generated Release Notes:"
-          echo "============================"
-          if [[ -f release_notes.md ]]; then
-            cat release_notes.md
-          else
-            echo "❌ No release notes file generated"
-            echo ""
-            echo "Raw output:"
-            echo "${{ steps.ai_release.outputs.release_notes }}"
-          fi
-          echo "============================"
+          SERVICE="${{ github.event.inputs.service }}"
+          VERSION="${{ steps.version.outputs.next }}"
 
-      - name: Upload Release Notes
-        if: always()
+          echo "🐳 [DRY RUN] Would build Docker image:"
+          echo "  Image: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${SERVICE}:v${VERSION}"
+          echo "  Tags: v${VERSION}, latest"
+          echo "  Platforms: linux/amd64, linux/arm64"
+
+          echo "FROM alpine:latest" > Dockerfile.test
+          echo "LABEL version=\"${VERSION}\"" >> Dockerfile.test
+          echo "LABEL service=\"${SERVICE}\"" >> Dockerfile.test
+          echo "RUN echo 'Test image for ${SERVICE} v${VERSION}'" >> Dockerfile.test
+
+          echo "✅ Docker build simulation complete"
+
+      - name: Create GitHub Release (Simulation)
+        if: github.event.inputs.dry_run == 'true'
+        run: |
+          SERVICE="${{ github.event.inputs.service }}"
+          VERSION="${{ steps.version.outputs.next }}"
+          TAG="${SERVICE}-v${VERSION}"
+
+          echo "📦 [DRY RUN] Would create GitHub Release:"
+          echo "  Tag: $TAG"
+          echo "  Title: ${SERVICE} v${VERSION}"
+          echo "  Draft: false"
+          echo "  Prerelease: false"
+          echo ""
+          echo "Release body would be:"
+          echo "--------------------------------"
+          cat RELEASE_NOTES.md
+          echo "--------------------------------"
+
+      - name: Upload Release Notes Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-notes
-          path: release_notes.md
-          if-no-files-found: warn
+          name: release-notes-${{ github.event.inputs.service }}-${{ steps.version.outputs.next }}
+          path: RELEASE_NOTES.md
 
-      - name: Test with curl directly (for comparison)
-        if: always()
+  production-release:
+    needs: prepare-release
+    if: github.event.inputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Docker Image
         run: |
-          echo "🧪 Testing with simple curl command for comparison..."
+          SERVICE="${{ github.event.inputs.service }}"
+          VERSION="${{ needs.prepare-release.outputs.next_version }}"
 
-          SIMPLE_RESPONSE=$(curl -s -X POST \
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "contents": [{
-                "parts": [{
-                  "text": "Write a simple test response in 10 words"
-                }]
-              }],
-              "generationConfig": {
-                "temperature": 0.5,
-                "maxOutputTokens": 50
-              }
-            }')
+          echo "🐳 Building real Docker image..."
 
-          echo "Simple test response:"
-          echo "$SIMPLE_RESPONSE" | jq '.candidates[0].content.parts[0].text' 2>/dev/null || echo "Failed to get simple response"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --tag ${{ env.REGISTRY }}/${{ github.repository_owner }}/${SERVICE}:v${VERSION} \
+            --tag ${{ env.REGISTRY }}/${{ github.repository_owner }}/${SERVICE}:latest \
+            --push \
+            ./${SERVICE}
+
+          echo "✅ Docker image pushed successfully"
+
+      - name: Create Git Tag
+        run: |
+          SERVICE="${{ github.event.inputs.service }}"
+          VERSION="${{ needs.prepare-release.outputs.next_version }}"
+          TAG="${SERVICE}-v${VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "$TAG" -m "Release ${SERVICE} v${VERSION}"
+          git push origin "$TAG"
+
+          echo "🏷️ Created tag: $TAG"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.service }}-v${{ needs.prepare-release.outputs.next_version }}
+          name: ${{ github.event.inputs.service }} v${{ needs.prepare-release.outputs.next_version }}
+          body: ${{ needs.prepare-release.outputs.release_notes }}
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+
+      - name: Post Release Notification
+        run: |
+          SERVICE="${{ github.event.inputs.service }}"
+          VERSION="${{ needs.prepare-release.outputs.next_version }}"
+
+          echo "🎉 Release completed successfully!"
+          echo "📦 Service: ${SERVICE}"
+          echo "🏷️ Version: v${VERSION}"
+          echo "🐳 Image: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${SERVICE}:v${VERSION}"
+          echo "📄 Release: https://github.com/${{ github.repository }}/releases/tag/${SERVICE}-v${VERSION}"
+
+  summary:
+    needs: [prepare-release]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Release Summary
+        run: |
+          echo "## 📊 Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Service** | ${{ github.event.inputs.service }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Version** | ${{ needs.prepare-release.outputs.current_version }} → ${{ needs.prepare-release.outputs.next_version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Type** | ${{ github.event.inputs.version_bump }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Dry Run** | ${{ github.event.inputs.dry_run }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Workflow** | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "${{ github.event.inputs.dry_run }}" == "true" ]]; then
+            echo "ℹ️ **This was a dry run.** No actual release was created." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **Release created successfully!**" >> $GITHUB_STEP_SUMMARY
+          fi
