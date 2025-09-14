@@ -33,9 +33,9 @@ on:
         default: "single"
         type: choice
         options:
-          - single       # Delete only this version
-          - above        # Delete this version and all above
-          - above_keep   # Delete all above but keep this version
+          - single # Delete this version (+next if exists) and recreate this version
+          - above # Delete this version and all above, recreate this version
+          - above_keep # Delete all above, keep this, create next version
       confirm_delete:
         description: "Type 'DELETE' to confirm (only for delete action)"
         required: false
@@ -61,13 +61,18 @@ jobs:
           VERSION="${{ github.event.inputs.version }}"
           ENV="${{ github.event.inputs.environment }}"
           ACTION="${{ github.event.inputs.action }}"
-          
+
           # Validate version format (X.Y.Z)
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "❌ Invalid version! Use format X.Y.Z (e.g. 1.2.3)" >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
-          
+
+          # Calculate next version (for single delete mode)
+          IFS='.' read -ra VER_PARTS <<< "$VERSION"
+          NEXT_PATCH=$((VER_PARTS[2] + 1))
+          NEXT_VERSION="${VER_PARTS[0]}.${VER_PARTS[1]}.${NEXT_PATCH}"
+
           # Define suffix based on environment
           if [[ "$ENV" == "development" ]]; then
             TAG_SUFFIX="-next-dev"
@@ -78,24 +83,27 @@ jobs:
             REGISTRY_NAME="aweci"
             ENV_LABEL="🚀 Production"
           fi
-          
+
           FULL_TAG="${SERVICE}-${VERSION}${TAG_SUFFIX}"
-          
+          NEXT_TAG="${SERVICE}-${NEXT_VERSION}${TAG_SUFFIX}"
+
           echo "action=${ACTION}" >> $GITHUB_OUTPUT
           echo "service=${SERVICE}" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "next_version=${NEXT_VERSION}" >> $GITHUB_OUTPUT
           echo "environment=${ENV}" >> $GITHUB_OUTPUT
           echo "tag_suffix=${TAG_SUFFIX}" >> $GITHUB_OUTPUT
           echo "registry_name=${REGISTRY_NAME}" >> $GITHUB_OUTPUT
           echo "env_label=${ENV_LABEL}" >> $GITHUB_OUTPUT
           echo "full_tag=${FULL_TAG}" >> $GITHUB_OUTPUT
+          echo "next_tag=${NEXT_TAG}" >> $GITHUB_OUTPUT
 
       # ==================== CREATE SECTION ====================
       - name: Validate service exists (for create)
         if: github.event.inputs.action == 'create'
         run: |
           SERVICE="${{ steps.setup.outputs.service }}"
-          
+
           # Check if service exists
           if [[ ! -d "$SERVICE" ]] || [[ ! -f "$SERVICE/Dockerfile" ]]; then
             echo "❌ Service '$SERVICE' not found or doesn't have a Dockerfile!" >> $GITHUB_STEP_SUMMARY
@@ -117,7 +125,7 @@ jobs:
           SERVICE="${{ steps.setup.outputs.service }}"
           VERSION="${{ steps.setup.outputs.version }}"
           TAG_SUFFIX="${{ steps.setup.outputs.tag_suffix }}"
-          
+
           # Check if tag already exists
           if git rev-parse "$FULL_TAG" >/dev/null 2>&1; then
             echo "❌ Tag '$FULL_TAG' already exists!" >> $GITHUB_STEP_SUMMARY
@@ -128,10 +136,10 @@ jobs:
             done
             exit 1
           fi
-          
+
           # Get latest tag for comparison
           LATEST_TAG=$(git tag -l "${SERVICE}-*${TAG_SUFFIX}" --sort=-version:refname | head -n 1)
-          
+
           if [[ -n "$LATEST_TAG" ]]; then
             LATEST_VERSION=$(echo $LATEST_TAG | sed "s/${SERVICE}-//" | sed 's/-next.*//')
             echo "📊 Latest version: $LATEST_VERSION"
@@ -166,7 +174,7 @@ jobs:
             CHANGE_TYPE="INITIAL"
             EMOJI="🎉"
           fi
-          
+
           echo "change_type=${CHANGE_TYPE}" >> $GITHUB_OUTPUT
           echo "emoji=${EMOJI}" >> $GITHUB_OUTPUT
           echo "latest_version=${LATEST_VERSION}" >> $GITHUB_OUTPUT
@@ -176,7 +184,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           # Create annotated tag with message
           git tag -a "${{ steps.setup.outputs.full_tag }}" \
             -m "${{ steps.create_prep.outputs.emoji }} ${{ steps.create_prep.outputs.change_type }}: ${{ steps.setup.outputs.service }} v${{ steps.setup.outputs.version }}" \
@@ -184,44 +192,19 @@ jobs:
             -m "Type: ${{ steps.setup.outputs.env_label }}" \
             -m "Created manually by: ${{ github.actor }}" \
             -m "Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          
+
           # Push tag
           git push origin "${{ steps.setup.outputs.full_tag }}"
-          
+
           echo "✅ Tag created successfully!"
 
-      - name: Generate create summary
-        if: github.event.inputs.action == 'create'
-        run: |
-          echo "# ${{ steps.create_prep.outputs.emoji }} Tag Created Successfully!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📋 Details" >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Tag Created!" >> $GITHUB_STEP_SUMMARY
+          echo "Created tag: \`${{ steps.setup.outputs.full_tag }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Service** | \`${{ steps.setup.outputs.service }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Version** | \`${{ steps.setup.outputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Environment** | ${{ steps.setup.outputs.env_label }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Full Tag** | \`${{ steps.setup.outputs.full_tag }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Change Type** | ${{ steps.create_prep.outputs.change_type }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Previous Version** | \`${{ steps.create_prep.outputs.latest_version }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Created by** | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🚀 Next Steps" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Tag has been created! Now you can:" >> $GITHUB_STEP_SUMMARY
-          echo "1. Run the normal **Build & Deploy** workflow" >> $GITHUB_STEP_SUMMARY
-          echo "2. Select service \`${{ steps.setup.outputs.service }}\`" >> $GITHUB_STEP_SUMMARY
-          if [[ "${{ steps.setup.outputs.environment }}" == "development" ]]; then
-            echo "3. Choose option \`${{ steps.setup.outputs.service }}-dev\`" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "3. Choose option \`${{ steps.setup.outputs.service }}\`" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📊 Recent Tags for ${{ steps.setup.outputs.service }}" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          git tag -l "${{ steps.setup.outputs.service }}-*${{ steps.setup.outputs.tag_suffix }}" | sort -V | tail -5 >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "### 📝 Next build will:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Build version **${{ steps.setup.outputs.version }}**" >> $GITHUB_STEP_SUMMARY
+          echo "2. Auto-create next tag **${{ steps.setup.outputs.next_version }}**" >> $GITHUB_STEP_SUMMARY
 
       # ==================== DELETE SECTION ====================
       - name: Validate delete confirmation
@@ -231,48 +214,53 @@ jobs:
             echo "❌ Confirmation failed! You must type 'DELETE' to proceed." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "⚠️ This is a safety measure to prevent accidental deletions." >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "To proceed with deletion, please:" >> $GITHUB_STEP_SUMMARY
-            echo "1. Re-run this workflow" >> $GITHUB_STEP_SUMMARY
-            echo "2. Type exactly 'DELETE' in the confirmation field (case-sensitive)" >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
 
-      - name: Prepare deletion list
+      - name: Prepare deletion and recreation plan
         if: github.event.inputs.action == 'delete'
         id: delete_prep
         run: |
           SERVICE="${{ steps.setup.outputs.service }}"
           VERSION="${{ steps.setup.outputs.version }}"
+          NEXT_VERSION="${{ steps.setup.outputs.next_version }}"
           TAG_SUFFIX="${{ steps.setup.outputs.tag_suffix }}"
           MODE="${{ github.event.inputs.delete_mode }}"
-          
+          TARGET_TAG="${{ steps.setup.outputs.full_tag }}"
+          NEXT_TAG="${{ steps.setup.outputs.next_tag }}"
+
           # Get all tags for this service and environment
           ALL_TAGS=$(git tag -l "${SERVICE}-*${TAG_SUFFIX}" | grep -E "${SERVICE}-[0-9]+\.[0-9]+\.[0-9]+${TAG_SUFFIX}$" | sort -V)
-          
+
           if [[ -z "$ALL_TAGS" ]]; then
             echo "❌ No tags found for ${SERVICE} in ${{ steps.setup.outputs.env_label }} environment!" >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
-          
-          # Find tags to delete based on mode
-          TARGET_TAG="${{ steps.setup.outputs.full_tag }}"
+
+          # Initialize variables
           TAGS_TO_DELETE=""
-          
+          TAG_TO_CREATE=""
+
           case "$MODE" in
             single)
+              # Delete target version
               if echo "$ALL_TAGS" | grep -q "^${TARGET_TAG}$"; then
-                TAGS_TO_DELETE="$TARGET_TAG"
+                TAGS_TO_DELETE="${TARGET_TAG}\n"
               else
                 echo "❌ Tag ${TARGET_TAG} not found!" >> $GITHUB_STEP_SUMMARY
-                echo "" >> $GITHUB_STEP_SUMMARY
-                echo "Available tags:" >> $GITHUB_STEP_SUMMARY
-                echo '```' >> $GITHUB_STEP_SUMMARY
-                echo "$ALL_TAGS" | tail -10 >> $GITHUB_STEP_SUMMARY
-                echo '```' >> $GITHUB_STEP_SUMMARY
                 exit 1
               fi
+              
+              # Also delete next version if it exists (the auto-created one)
+              if echo "$ALL_TAGS" | grep -q "^${NEXT_TAG}$"; then
+                TAGS_TO_DELETE="${TAGS_TO_DELETE}${NEXT_TAG}\n"
+                echo "ℹ️ Found auto-created next tag ${NEXT_TAG}, will delete it too" >> $GITHUB_STEP_SUMMARY
+              fi
+              
+              # Will recreate the target version for next build
+              TAG_TO_CREATE="${TARGET_TAG}"
               ;;
+              
             above)
               # Delete target version and all above
               FOUND=false
@@ -288,7 +276,11 @@ jobs:
                 echo "❌ Tag ${TARGET_TAG} not found!" >> $GITHUB_STEP_SUMMARY
                 exit 1
               fi
+              
+              # Will recreate the target version for next build
+              TAG_TO_CREATE="${TARGET_TAG}"
               ;;
+              
             above_keep)
               # Delete all above but keep target version
               FOUND=false
@@ -310,59 +302,76 @@ jobs:
                 echo "Nothing to delete." >> $GITHUB_STEP_SUMMARY
                 exit 0
               fi
+              
+              # Will create the NEXT version for next build (since we're keeping current)
+              TAG_TO_CREATE="${NEXT_TAG}"
               ;;
           esac
-          
-          # Remove trailing newline and save to file
+
+          # Save tags to delete
           echo -e "$TAGS_TO_DELETE" | grep -v '^$' > tags_to_delete.txt
-          
+
           # Count tags
           TAG_COUNT=$(cat tags_to_delete.txt | wc -l)
-          
+
+          # Extract version from tag to create
+          VERSION_TO_CREATE=$(echo "$TAG_TO_CREATE" | sed "s/${SERVICE}-//" | sed 's/-next.*//')
+
           echo "tag_count=${TAG_COUNT}" >> $GITHUB_OUTPUT
-          
-          # Display what will be deleted
-          echo "## 🗑️ Deletion Plan" >> $GITHUB_STEP_SUMMARY
+          echo "tag_to_create=${TAG_TO_CREATE}" >> $GITHUB_OUTPUT
+          echo "version_to_create=${VERSION_TO_CREATE}" >> $GITHUB_OUTPUT
+
+          # Display the plan
+          echo "## 🎯 Execution Plan" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Environment:** ${{ steps.setup.outputs.env_label }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Service:** ${SERVICE}" >> $GITHUB_STEP_SUMMARY
+          echo "### 1️⃣ Delete Phase" >> $GITHUB_STEP_SUMMARY
           echo "**Mode:** ${MODE}" >> $GITHUB_STEP_SUMMARY
-          echo "**Total to delete:** ${TAG_COUNT} version(s)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Tags to be deleted:" >> $GITHUB_STEP_SUMMARY
+          echo "**Tags to delete (${TAG_COUNT}):**" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           cat tags_to_delete.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 2️⃣ Recreation Phase" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag to create:** \`${TAG_TO_CREATE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${VERSION_TO_CREATE}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 3️⃣ Next Build Behavior" >> $GITHUB_STEP_SUMMARY
+          if [[ "$MODE" == "above_keep" ]]; then
+            echo "- Will build version **${VERSION_TO_CREATE}**" >> $GITHUB_STEP_SUMMARY
+            echo "- Will auto-create next tag after ${VERSION_TO_CREATE}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- Will build version **${VERSION_TO_CREATE}**" >> $GITHUB_STEP_SUMMARY
+            echo "- Will auto-create tag **${NEXT_VERSION}**" >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Delete Git tags
         if: github.event.inputs.action == 'delete'
         run: |
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📝 Deleting Git Tags" >> $GITHUB_STEP_SUMMARY
+          echo "## 📝 Phase 1: Deleting Git Tags" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           DELETED_TAGS=""
           FAILED_TAGS=""
-          
+
           while IFS= read -r tag; do
             echo "Deleting Git tag: $tag"
             if git push origin --delete "$tag" 2>/dev/null; then
               DELETED_TAGS="${DELETED_TAGS}- ✅ ${tag}\n"
-              # Also delete locally
               git tag -d "$tag" 2>/dev/null || true
             else
               FAILED_TAGS="${FAILED_TAGS}- ❌ ${tag} (may not exist)\n"
             fi
           done < tags_to_delete.txt
-          
+
           if [[ -n "$DELETED_TAGS" ]]; then
             echo "### Successfully deleted tags:" >> $GITHUB_STEP_SUMMARY
             echo -e "$DELETED_TAGS" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           if [[ -n "$FAILED_TAGS" ]]; then
             echo "### Failed to delete tags:" >> $GITHUB_STEP_SUMMARY
             echo -e "$FAILED_TAGS" >> $GITHUB_STEP_SUMMARY
@@ -380,24 +389,22 @@ jobs:
         if: github.event.inputs.action == 'delete'
         run: |
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🐳 Deleting Docker Images from GHCR" >> $GITHUB_STEP_SUMMARY
+          echo "## 🐳 Phase 2: Deleting Docker Images" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
+
           REGISTRY="ghcr.io/${{ github.repository_owner }}/${{ steps.setup.outputs.registry_name }}"
           SERVICE="${{ steps.setup.outputs.service }}"
-          
+
           DELETED_IMAGES=""
           FAILED_IMAGES=""
-          
+
           while IFS= read -r tag; do
-            # Extract version from tag (remove service prefix and suffix)
             VERSION=$(echo "$tag" | sed "s/${SERVICE}-//" | sed 's/-next.*//')
             IMAGE_TAG="${SERVICE}-${VERSION}"
             FULL_IMAGE="${REGISTRY}:${IMAGE_TAG}"
             
             echo "Attempting to delete: $FULL_IMAGE"
             
-            # Get package version ID using GitHub API
             PACKAGE_VERSION_ID=$(curl -s \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
@@ -406,7 +413,6 @@ jobs:
               | jq -r ".[] | select(.metadata.container.tags[] | contains(\"${IMAGE_TAG}\")) | .id" | head -1)
             
             if [[ -n "$PACKAGE_VERSION_ID" ]] && [[ "$PACKAGE_VERSION_ID" != "null" ]]; then
-              # Delete the package version
               DELETE_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
                 -X DELETE \
                 -H "Accept: application/vnd.github+json" \
@@ -426,49 +432,82 @@ jobs:
               echo "  ⚠️ Image not found in registry"
             fi
             
-            # Small delay to avoid rate limiting
             sleep 1
           done < tags_to_delete.txt
-          
+
           if [[ -n "$DELETED_IMAGES" ]]; then
             echo "### Successfully deleted images:" >> $GITHUB_STEP_SUMMARY
             echo -e "$DELETED_IMAGES" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           if [[ -n "$FAILED_IMAGES" ]]; then
             echo "### Failed to delete images:" >> $GITHUB_STEP_SUMMARY
             echo -e "$FAILED_IMAGES" >> $GITHUB_STEP_SUMMARY
           fi
 
-      - name: List remaining versions (delete action)
+      - name: Recreate tag for next build
         if: github.event.inputs.action == 'delete'
         run: |
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📊 Remaining Versions" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔄 Phase 3: Recreating Tag for Next Build" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
+
+          TAG_TO_CREATE="${{ steps.delete_prep.outputs.tag_to_create }}"
+          VERSION_TO_CREATE="${{ steps.delete_prep.outputs.version_to_create }}"
+          MODE="${{ github.event.inputs.delete_mode }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Determine the message based on mode
+          if [[ "$MODE" == "above_keep" ]]; then
+            MESSAGE="🔄 NEXT: Ready for build after keeping v${VERSION}"
+            DESCRIPTION="Next version after rollback"
+          else
+            MESSAGE="🔄 ROLLBACK: Ready to rebuild v${VERSION_TO_CREATE}"
+            DESCRIPTION="Recreated after deletion for rebuild"
+          fi
+
+          # Create annotated tag
+          git tag -a "${TAG_TO_CREATE}" \
+            -m "${MESSAGE}" \
+            -m "" \
+            -m "Type: ${{ steps.setup.outputs.env_label }}" \
+            -m "Action: ${DESCRIPTION}" \
+            -m "Recreated by: ${{ github.actor }}" \
+            -m "Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Push tag
+          git push origin "${TAG_TO_CREATE}"
+
+          echo "✅ **Tag recreated:** \`${TAG_TO_CREATE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🚀 Ready for Next Build!" >> $GITHUB_STEP_SUMMARY
+          echo "The build workflow will now:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Find tag \`${TAG_TO_CREATE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "2. Build version **${VERSION_TO_CREATE}**" >> $GITHUB_STEP_SUMMARY
+          echo "3. Auto-create the next incremented tag" >> $GITHUB_STEP_SUMMARY
+
+      - name: List final state
+        if: github.event.inputs.action == 'delete'
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📊 Final State" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
           SERVICE="${{ steps.setup.outputs.service }}"
           TAG_SUFFIX="${{ steps.setup.outputs.tag_suffix }}"
-          
-          echo "### Git Tags for ${SERVICE} (${{ steps.setup.outputs.env_label }}):" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          git tag -l "${SERVICE}-*${TAG_SUFFIX}" | grep -E "${SERVICE}-[0-9]+\.[0-9]+\.[0-9]+${TAG_SUFFIX}$" | sort -V | tail -10 >> $GITHUB_STEP_SUMMARY || echo "No tags remaining" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Docker Images in GHCR:" >> $GITHUB_STEP_SUMMARY
-          echo "Check at: https://github.com/${{ github.repository }}/pkgs/container/${{ steps.setup.outputs.registry_name }}" >> $GITHUB_STEP_SUMMARY
 
-      - name: Final summary (delete action)
-        if: github.event.inputs.action == 'delete'
-        run: |
+          echo "### Current Git Tags (last 10):" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          git tag -l "${SERVICE}-*${TAG_SUFFIX}" | grep -E "${SERVICE}-[0-9]+\.[0-9]+\.[0-9]+${TAG_SUFFIX}$" | sort -V | tail -10 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## ✅ Deletion Complete!" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Service** | ${{ steps.setup.outputs.service }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Environment** | ${{ steps.setup.outputs.env_label }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Versions Deleted** | ${{ steps.delete_prep.outputs.tag_count }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Executed by** | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Workflow Run** | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "### Summary:" >> $GITHUB_STEP_SUMMARY
+          echo "| Action | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Deleted tags | ✅ ${{ steps.delete_prep.outputs.tag_count }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deleted images | ✅ Processed |" >> $GITHUB_STEP_SUMMARY
+          echo "| Recreated tag | ✅ \`${{ steps.delete_prep.outputs.tag_to_create }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Ready for build | ✅ Yes |" >> $GITHUB_STEP_SUMMARY
