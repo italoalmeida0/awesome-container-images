@@ -1,6 +1,6 @@
-FROM debian:13.1-slim
+FROM bitnami/minideb:bookworm
 
-RUN apt-get update && apt-get install -y \
+RUN install_packages \
     build-essential \
     procps \
     curl \
@@ -8,9 +8,7 @@ RUN apt-get update && apt-get install -y \
     sudo \
     git \
     ca-certificates \
-    apt-transport-https \
-    locales \
-    && rm -rf /var/lib/apt/lists/*
+    locales
 
 RUN localedef -i en_US -f UTF-8 en_US.UTF-8
 
@@ -25,3 +23,10 @@ USER user
 WORKDIR /home/user
 
 RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+ENV PATH="/home/linuxbrew/.linuxbrew/bin:${PATH}"
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=1s --retries=5 \
+  CMD /bin/bash -c "echo 'healthy'" || exit 0
+
+CMD ["tail", "-f", "/dev/null"]
