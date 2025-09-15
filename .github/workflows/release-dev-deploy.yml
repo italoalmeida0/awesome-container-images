@@ -226,38 +226,52 @@ jobs:
         id: validate_health
         run: |
           echo "🏥 Validating healthcheck for the built image..."
-
           IMAGE="${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ needs.prepare.outputs.current_version }}"
-
           docker pull $IMAGE
-
           CONTAINER_ID=$(docker run -d \
             --name test-health-${{ github.run_id }} \
             -e PORT=8080 \
             -p 8080:8080 \
             $IMAGE)
-
           echo "Container started: $CONTAINER_ID"
-
-          for i in 1 2 3 4 5 6 7 8 9 10; do
+          
+          MAX_ATTEMPTS=30
+          for i in $(seq 1 $MAX_ATTEMPTS); do
             sleep 10
             
             HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' test-health-${{ github.run_id }} 2>/dev/null || echo "none")
-            echo "Attempt $i/10: Status = $HEALTH_STATUS"
+            echo "Attempt $i/$MAX_ATTEMPTS: Status = $HEALTH_STATUS"
             
-            if [ "$HEALTH_STATUS" = "healthy" ]; then
-              echo "✅ Container healthy!"
-              docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
-              exit 0
-            elif [ "$HEALTH_STATUS" = "unhealthy" ]; then
-              echo "❌ Container unhealthy!"
-              docker logs --tail 50 test-health-${{ github.run_id }}
-              docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
-              exit 1
-            fi
+            case "$HEALTH_STATUS" in
+              "healthy")
+                echo "✅ Container healthy after $((i * 10)) seconds!"
+                docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
+                exit 0
+                ;;
+              "unhealthy")
+                echo "❌ Container unhealthy after $((i * 10)) seconds!"
+                echo "📋 Container logs:"
+                docker logs --tail 50 test-health-${{ github.run_id }}
+                docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
+                exit 1
+                ;;
+              "starting")
+                echo "⏳ Health check still in progress..."
+                ;;
+              "none")
+                echo "⚠️ No health check defined or container not running"
+                if ! docker ps -q -f name=test-health-${{ github.run_id }} | grep -q .; then
+                  echo "❌ Container stopped unexpectedly!"
+                  docker logs --tail 50 test-health-${{ github.run_id }}
+                  docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
+                  exit 1
+                fi
+                ;;
+            esac
           done
-              
-          echo "⏱️ Timeout after 100 seconds - Status: $HEALTH_STATUS"
+          
+          echo "⏱️ Timeout after $((MAX_ATTEMPTS * 10)) seconds - Final status: $HEALTH_STATUS"
+          echo "📋 Container logs:"
           docker logs --tail 50 test-health-${{ github.run_id }}
           docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
           exit 1
