@@ -237,19 +237,19 @@ jobs:
           
           MAX_ATTEMPTS=30
           for i in $(seq 1 $MAX_ATTEMPTS); do
-            sleep 10
+            sleep 5
             
             HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' test-health-${{ github.run_id }} 2>/dev/null || echo "none")
             echo "Attempt $i/$MAX_ATTEMPTS: Status = $HEALTH_STATUS"
             
             case "$HEALTH_STATUS" in
               "healthy")
-                echo "✅ Container healthy after $((i * 10)) seconds!"
+                echo "✅ Container healthy after $((i * 5)) seconds!"
                 docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
                 exit 0
                 ;;
               "unhealthy")
-                echo "❌ Container unhealthy after $((i * 10)) seconds!"
+                echo "❌ Container unhealthy after $((i * 5)) seconds!"
                 echo "📋 Container logs:"
                 docker logs --tail 50 test-health-${{ github.run_id }}
                 docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
@@ -270,7 +270,7 @@ jobs:
             esac
           done
           
-          echo "⏱️ Timeout after $((MAX_ATTEMPTS * 10)) seconds - Final status: $HEALTH_STATUS"
+          echo "⏱️ Timeout after $((MAX_ATTEMPTS * 5)) seconds - Final status: $HEALTH_STATUS"
           echo "📋 Container logs:"
           docker logs --tail 50 test-health-${{ github.run_id }}
           docker rm -f test-health-${{ github.run_id }} >/dev/null 2>&1
