@@ -22,7 +22,7 @@ jobs:
 
       - name: Discover services and update workflow
         run: |
-          WORKFLOW_FILE=".github/workflows/release-dev-deploy.yml"
+          WORKFLOW_FILE=".github/workflows/build_deploy.yml"
 
           echo "🔍 Discovering all services..."
 
@@ -106,7 +106,7 @@ jobs:
               This PR was automatically generated to update the workflow options.
               
               ### Changes:
-              - Updated service options in release-dev-deploy.yml
+              - Updated service options in build_deploy.yml
               - Added entries for: $SERVICES
               
               Please review and merge." \
@@ -131,7 +131,7 @@ jobs:
 
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if git diff --quiet .github/workflows/release-dev-deploy.yml; then
+          if git diff --quiet .github/workflows/build_deploy.yml; then
             echo "**Status:** ✅ Workflow is up to date" >> $GITHUB_STEP_SUMMARY
           else
             echo "**Status:** 📝 Workflow updated with new services" >> $GITHUB_STEP_SUMMARY

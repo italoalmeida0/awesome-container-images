@@ -69,6 +69,7 @@ jobs:
             IS_DEV="false"
             TAG_SUFFIX="-next"
             REGISTRY="ghcr.io/italoalmeida0/aweci"
+            DOCKERHUB_REGISTRY="italoalmeida0/aweci"
             BUILD_TYPE="🚀 Release"
           fi
 
@@ -82,6 +83,7 @@ jobs:
           echo "is_dev=${IS_DEV}" >> $GITHUB_OUTPUT
           echo "tag_suffix=${TAG_SUFFIX}" >> $GITHUB_OUTPUT
           echo "registry=${REGISTRY}" >> $GITHUB_OUTPUT
+          echo "dockerhub_registry=${DOCKERHUB_REGISTRY}" >> $GITHUB_OUTPUT
           echo "build_type=${BUILD_TYPE}" >> $GITHUB_OUTPUT
 
       - name: Get current and next version
@@ -150,6 +152,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub (Production only)
+        if: needs.prepare.outputs.is_dev == 'false'
+        uses: docker/login-action@v2
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Build and push architecture-specific image
         id: build_with_cache
         continue-on-error: true
@@ -164,6 +173,8 @@ jobs:
           tags: |
             ${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ needs.prepare.outputs.current_version }}-${{ matrix.arch }}
             ${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ matrix.arch }}
+            ${{ needs.prepare.outputs.is_dev == 'false' && format('italoalmeida0/aweci:{0}-{1}-{2}', needs.prepare.outputs.service, needs.prepare.outputs.current_version, matrix.arch) || '' }}
+            ${{ needs.prepare.outputs.is_dev == 'false' && format('italoalmeida0/aweci:{0}-{1}', needs.prepare.outputs.service, matrix.arch) || '' }}
           provenance: false
 
       - name: Build without cache (fallback)
@@ -178,6 +189,8 @@ jobs:
           tags: |
             ${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ needs.prepare.outputs.current_version }}-${{ matrix.arch }}
             ${{ needs.prepare.outputs.registry }}:${{ needs.prepare.outputs.service }}-${{ matrix.arch }}
+            ${{ needs.prepare.outputs.is_dev == 'false' && format('italoalmeida0/aweci:{0}-{1}-{2}', needs.prepare.outputs.service, needs.prepare.outputs.current_version, matrix.arch) || '' }}
+            ${{ needs.prepare.outputs.is_dev == 'false' && format('italoalmeida0/aweci:{0}-{1}', needs.prepare.outputs.service, matrix.arch) || '' }}
           provenance: false
 
   # ============================================
@@ -193,13 +206,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub (Production only)
+        if: needs.prepare.outputs.is_dev == 'false'
+        uses: docker/login-action@v2
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Create and push multi-arch manifest
         run: |
           REGISTRY="${{ needs.prepare.outputs.registry }}"
           SERVICE="${{ needs.prepare.outputs.service }}"
           VERSION="${{ needs.prepare.outputs.current_version }}"
+          IS_DEV="${{ needs.prepare.outputs.is_dev }}"
 
-          # Criar manifest para a versão específica
           docker manifest create \
             ${REGISTRY}:${SERVICE}-${VERSION} \
             ${REGISTRY}:${SERVICE}-${VERSION}-amd64 \
@@ -207,15 +227,34 @@ jobs:
 
           docker manifest push ${REGISTRY}:${SERVICE}-${VERSION}
 
-          # Criar manifest para a tag latest
           docker manifest create \
             ${REGISTRY}:${SERVICE} \
-            ${REGISTRY}:${SERVICE}-${VERSION}-amd64 \
-            ${REGISTRY}:${SERVICE}-${VERSION}-arm64
+            ${REGISTRY}:${SERVICE}-amd64 \
+            ${REGISTRY}:${SERVICE}-arm64
 
           docker manifest push ${REGISTRY}:${SERVICE}
 
-          echo "✅ Multi-arch manifest created and pushed"
+          if [[ "$IS_DEV" == "false" ]]; then
+            echo "🐋 Creating Docker Hub manifests..."
+            
+            docker manifest create \
+              italoalmeida0/aweci:${SERVICE}-${VERSION} \
+              italoalmeida0/aweci:${SERVICE}-${VERSION}-amd64 \
+              italoalmeida0/aweci:${SERVICE}-${VERSION}-arm64
+
+            docker manifest push italoalmeida0/aweci:${SERVICE}-${VERSION}
+
+            docker manifest create \
+              italoalmeida0/aweci:${SERVICE} \
+              italoalmeida0/aweci:${SERVICE}-amd64 \
+              italoalmeida0/aweci:${SERVICE}-arm64
+
+            docker manifest push italoalmeida0/aweci:${SERVICE}
+            
+            echo "✅ Multi-arch manifests created for both registries"
+          else
+            echo "✅ Multi-arch manifest created for GitHub Container Registry only"
+          fi
 
   validate:
     needs: [prepare, create-manifest]
@@ -234,7 +273,7 @@ jobs:
             -p 8080:8080 \
             $IMAGE)
           echo "Container started: $CONTAINER_ID"
-          
+
           MAX_ATTEMPTS=30
           for i in $(seq 1 $MAX_ATTEMPTS); do
             sleep 5
@@ -269,7 +308,7 @@ jobs:
                 ;;
             esac
           done
-          
+
           echo "⏱️ Timeout after $((MAX_ATTEMPTS * 5)) seconds - Final status: $HEALTH_STATUS"
           echo "📋 Container logs:"
           docker logs --tail 50 test-health-${{ github.run_id }}
