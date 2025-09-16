@@ -16,17 +16,27 @@ RUN echo 'source /home/user/.venv/bin/activate' >> ~/.bashrc_immutable
 FROM bitnami/minideb:latest
 
 RUN install_packages \
-    sudo \
+    apt-transport-https \
+    build-essential \
+    ca-certificates \
     curl \
     git \
+    gnupg2 \
+    htop \
+    jq \
+    less \
+    locales \
+    lsb-release \
+    nano \
+    ncurses-bin \
     openssh-client \
-    wget \
+    procps \
+    sudo \
+    tree \
     unzip \
     vim \
-    ca-certificates \
-    locales \
-    procps \
-    build-essential
+    wget \
+    zip
 
 RUN localedef -i en_US -f UTF-8 en_US.UTF-8
 
