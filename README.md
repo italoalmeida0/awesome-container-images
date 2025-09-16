@@ -22,7 +22,7 @@ Web-based Visual Studio Code with Docker support and development tools.
 ```yml
 services:
   vscode:
-    image: ghcr.io/italoalmeida0/aweci:vscode
+    image: italoalmeida0/aweci:vscode
     container_name: vscode
     hostname: vscode
     environment:
@@ -66,7 +66,7 @@ Modern data science environment with JupyterLab interface.
 ```yml
 services:
   jupyterlab:
-    image: ghcr.io/italoalmeida0/aweci:jupyterlab
+    image: italoalmeida0/aweci:jupyterlab
     container_name: jupyterlab
     hostname: jupyterlab
     environment:
