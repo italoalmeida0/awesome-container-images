@@ -588,6 +588,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub (Production only)
+        if: needs.prepare.outputs.is_dev == 'false'
+        uses: docker/login-action@v2
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Update Registry Latest Tags
         uses: docker/build-push-action@v5
         with:
@@ -598,6 +605,8 @@ jobs:
           tags: |
             ${{ needs.prepare.outputs.registry }}:latest
             ${{ needs.prepare.outputs.registry }}:default
+            ${{ needs.prepare.outputs.is_dev == 'false' && 'italoalmeida0/aweci:latest' || '' }}
+            ${{ needs.prepare.outputs.is_dev == 'false' && 'italoalmeida0/aweci:default' || '' }}
 
       - name: Final Summary
         run: |
