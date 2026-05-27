@@ -38,7 +38,7 @@ jobs:
       should_build: ${{ steps.parse.outputs.should_build }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -141,13 +141,13 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v2
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -155,7 +155,7 @@ jobs:
 
       - name: Log in to Docker Hub (Production only)
         if: needs.prepare.outputs.is_dev == 'false'
-        uses: docker/login-action@v2
+        uses: docker/login-action@v4
         with:
           username: ${{ github.actor }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -163,7 +163,7 @@ jobs:
       - name: Build and push architecture-specific image
         id: build_with_cache
         continue-on-error: true
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./${{ needs.prepare.outputs.service }}/Dockerfile
@@ -180,7 +180,7 @@ jobs:
 
       - name: Build without cache (fallback)
         if: steps.build_with_cache.outcome == 'failure'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./${{ needs.prepare.outputs.service }}/Dockerfile
@@ -201,7 +201,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v2
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -209,7 +209,7 @@ jobs:
 
       - name: Log in to Docker Hub (Production only)
         if: needs.prepare.outputs.is_dev == 'false'
-        uses: docker/login-action@v2
+        uses: docker/login-action@v4
         with:
           username: ${{ github.actor }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -322,7 +322,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -464,7 +464,7 @@ jobs:
 
       - name: Create GitHub Release
         if: needs.prepare.outputs.is_dev == 'false' && steps.ai_release.outcome == 'success'
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.current_tag }}
           name: "${{ needs.prepare.outputs.service }} v${{ needs.prepare.outputs.current_version }}"
@@ -580,10 +580,10 @@ jobs:
           EOF
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v2
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -591,13 +591,13 @@ jobs:
 
       - name: Log in to Docker Hub (Production only)
         if: needs.prepare.outputs.is_dev == 'false'
-        uses: docker/login-action@v2
+        uses: docker/login-action@v4
         with:
           username: ${{ github.actor }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Update Registry Latest Tags
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile.default
