@@ -9,11 +9,11 @@ echo ""
 echo "📁 Setting up environment..."
 sudo chown -R user:user /home/user
 if [ "$(ls -A /home/user)" ]; then
-    cp -a /app/home/. /home/user/
-    rm /home/user/.bashrc_immutable
+    cp -an /app/home/. /home/user/
+    rm -f /home/user/.bashrc_immutable 2>/dev/null || true
 fi
-[ ! -s "/home/user/.bashrc" ] && cp /etc/skel/.bashrc /home/user/.bashrc
-[ ! -f "/home/user/.bash_logout" ] && cp /etc/skel/.bash_logout /home/user/.bash_logout  
+[ ! -f "/home/user/.bashrc" ] && cp /etc/skel/.bashrc /home/user/.bashrc
+[ ! -f "/home/user/.bash_logout" ] && cp /etc/skel/.bash_logout /home/user/.bash_logout
 [ ! -f "/home/user/.profile" ] && cp /etc/skel/.profile /home/user/.profile
 
 echo ""
