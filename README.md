@@ -1,8 +1,8 @@
 ## | 🪸 AWECI - Awesome Container Images 🐋 |
- 
+
 Collection of ready-to-use development container images with modern tooling and optimized configurations.
 
-## Available App Images 
+## Available App Images
 
 ### 🧑‍💻 VSCode
 
@@ -14,7 +14,7 @@ Web-based Visual Studio Code with Docker support and development tools.
 - Docker CLI + Compose
 - Git configuration
 - Python 3 with UV package manager
-- Homebrew + Starship prompt
+- Homebrew
 - SSH tools
 
 **Usage:**
@@ -58,7 +58,7 @@ Modern data science environment with JupyterLab interface.
 - JupyterLab
 - Catppuccin theme
 - Python 3 with UV package manager
-- Homebrew + Starship prompt
+- Homebrew
 - SSH tools
 
 **Usage:**
@@ -85,13 +85,14 @@ services:
 - `PORT` - Server port (default: 8080)
 - `TZ` - Timezone
 
-## Available Dev Images 
+## Available Dev Images
 
 ### 🍺 Homebrew Base
 
 Lightweight base image with Homebrew/Linuxbrew pre-installed for easy package management.
 
 **Why use this?**
+
 - **~500MB** vs 1.3GB from homebrew/brew official image
 - Official Homebrew installation (unmodified)
 - Optimized for use as a base image

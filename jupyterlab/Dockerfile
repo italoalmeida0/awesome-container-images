@@ -5,9 +5,7 @@ USER user
 WORKDIR /home/user
 
 RUN brew_install \
-    uv \
-    starship
-RUN echo 'eval "$(/app/homebrew/bin/starship init bash)"' >> ~/.bashrc_immutable
+    uv
 
 RUN uv venv --seed .venv
 RUN uv pip install jupyterlab
