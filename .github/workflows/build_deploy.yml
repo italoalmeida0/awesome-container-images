@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   prepare:
-    runs-on: buildjet-2vcpu-ubuntu-2204
+    runs-on: ubuntu-22.04
     outputs:
       service: ${{ steps.parse.outputs.service }}
       is_dev: ${{ steps.parse.outputs.is_dev }}
@@ -133,10 +133,10 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            runner: buildjet-4vcpu-ubuntu-2204
+            runner: ubuntu-22.04
             arch: amd64
           - platform: linux/arm64
-            runner: buildjet-4vcpu-ubuntu-2204-arm
+            runner: ubuntu-22.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
@@ -198,7 +198,7 @@ jobs:
   create-manifest:
     needs: [prepare, build-arch]
     if: needs.prepare.outputs.should_build == 'true'
-    runs-on: buildjet-2vcpu-ubuntu-2204
+    runs-on: ubuntu-22.04
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v2
@@ -260,7 +260,7 @@ jobs:
   validate:
     needs: [prepare, create-manifest]
     if: needs.prepare.outputs.should_build == 'true'
-    runs-on: buildjet-2vcpu-ubuntu-2204-arm
+    runs-on: ubuntu-22.04-arm
     steps:
       - name: Validate image healthcheck
         id: validate_health
@@ -319,7 +319,7 @@ jobs:
   finalize:
     needs: [prepare, validate]
     if: needs.prepare.outputs.should_build == 'true' && success()
-    runs-on: buildjet-2vcpu-ubuntu-2204
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
